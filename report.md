@@ -52,10 +52,13 @@ EX 可前递条件：
 
 取指与前级推进都受 `stall_front` 控制：
 
-- `ireq.valid = !halted && !stall_front`
-- `fetch_fire = !halted && !stall_front && iresp.data_ok`
+- 前端采用“单请求 in-flight + 一拍取指缓冲”的 fetch FSM：
+  - 发起请求后保持 `ireq.valid/ireq.addr` 直到 `iresp.data_ok`
+  - 响应先写入 `fetch_buf`，前端解冻后再消费（`fetch_fire`）送入 `id_r`
+  - `stall_front` 仅阻止新请求与缓冲消费，不会修改 in-flight 请求
 
 这样可以直接扩展到后续的 load-use 冒险：只需把 `mem_result_ready` 接到真实访存返回时序，现有框架即可复用。
+同时也避免了在 ibus 多拍返回场景下“等待 `data_ok` 期间请求被改写”的时序风险。
 
 ## 4. M 扩展状态机
 
@@ -103,6 +106,10 @@ W 指令迭代步数固定为 32，并在输出时做 32->64 符号扩展。
 
 这样 Difftest 看到的是“提交当拍已生效”的架构态，避免 WB 与对拍时序错拍。
 
+![1772546140359](image/report/1772546140359.png)
+
+![1772546146598](image/report/1772546146598.png)
+
 ## 6. 性能分析
 
 已观测到 `test-lab1` IPC 明显高于 `test-lab1-extra`。原因是：
@@ -110,18 +117,26 @@ W 指令迭代步数固定为 32，并在输出时做 32->64 符号扩展。
 - `test-lab1` 以单周期基础 ALU 为主，流水线接近稳态
 - `test-lab1-extra` 含大量 M 指令，MDU 多周期执行拉长 EX 占用时间
 
-这不是功能错误，而是当前微结构选择（多周期 MDU + 顺序单发射）的直接结果。  
-本实现已做的优化点包括：
+这不是功能错误，而是当前微结构选择（多周期 MDU + 顺序单发射）的直接结果。本实现已做的优化点包括：
 
 - W 类指令用 32 位语义执行并符号扩展
-- `mul` 提前终止（乘数剩余位全 0）
-- `div/rem` 快速路径（`divisor=1`、`dividend<divisor`）
-- `div/rem` 按有效位动态确定迭代轮数
+- `mul` 快速路径与提前终止（`0/1` 快返、乘数剩余位全 0）
+- `div/rem` 快速路径（`dividend=0`、`divisor=1`、`dividend<divisor`、`divisor` 为 2 的幂）
+
+补充说明（按优化前后 IPC 对比）：
+
+- 优化前：`test-lab1` IPC 约 `0.49`，`test-lab1-extra` IPC 约 `0.0423`，两者约 `11.6x`，接近一个数量级差距。
+- 优化后（`-j12` 实测）：
+  - `test-lab1`：`instrCnt=16386, cycleCnt=32776, IPC=0.499939`
+  - `test-lab1-extra`：`instrCnt=32776, cycleCnt=246683, IPC=0.132867`
+- 优化后两者 IPC 比值约为 `0.499939 / 0.132867 ≈ 3.76x`，约 3 倍多。
 
 后续若继续提升 IPC，可在不改 ISA 可见行为的前提下做两类优化：
 
 - 更快迭代器（如 radix-4/Booth）
 - 细化停顿条件（让与长延迟结果无关的路径减少等待）
+
+  ![1772546193201](image/report/1772546193201.png)
 
 ## 7. AI 使用说明
 

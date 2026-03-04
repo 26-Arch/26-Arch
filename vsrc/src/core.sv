@@ -61,6 +61,14 @@ module core import common::*;(
 
 	logic [63:0] fetch_pc;
 	logic        fetch_fire;
+	logic        fetch_pending;
+	logic [63:0] fetch_req_pc;
+	logic        fetch_buf_valid;
+	logic [63:0] fetch_buf_pc;
+	logic [31:0] fetch_buf_instr;
+	logic        fetch_issue_fire;
+	logic        fetch_resp_fire;
+	logic [63:0] fetch_req_addr;
 
 	id_reg_t      id_r;
 	ex_reg_t      ex_r;
@@ -144,9 +152,12 @@ module core import common::*;(
 		id_r.valid && mem_r.valid && mem_r.wen && (mem_r.rd != 0) && !mem_result_ready &&
 		((id_use_rs1 && (id_rs1 == mem_r.rd)) || (id_use_rs2 && (id_rs2 == mem_r.rd)));
 	assign stall_front = stall_ex_busy || raw_hazard_ex || raw_hazard_mem;
-	assign fetch_fire = (!halted) && (!stall_front) && iresp.data_ok;
-	assign ireq.valid = !halted && !stall_front;
-	assign ireq.addr  = fetch_pc;
+	assign fetch_fire = (!halted) && (!stall_front) && fetch_buf_valid;
+	assign fetch_issue_fire = (!halted) && (!stall_front) && (!fetch_pending) && (!fetch_buf_valid || fetch_fire);
+	assign fetch_req_addr = fetch_pending ? fetch_req_pc : fetch_pc;
+	assign ireq.valid = !halted && (fetch_pending || fetch_issue_fire);
+	assign ireq.addr  = fetch_req_addr;
+	assign fetch_resp_fire = ireq.valid && iresp.data_ok;
 
 	assign id_opcode = id_r.instr[6:0];
 	assign id_funct3 = id_r.instr[14:12];
@@ -302,6 +313,13 @@ module core import common::*;(
 			logic [63:0] q_unsigned;
 			logic [63:0] r_unsigned;
 			logic [63:0] final_val;
+			logic [63:0] mul_src0;
+			logic [63:0] mul_src1;
+			logic [63:0] div_q_abs_fast;
+			logic [63:0] div_r_abs_fast;
+			logic [63:0] div_pow2_mask;
+			logic        div_is_pow2;
+			logic [5:0]  div_pow2_shift;
 			logic        div_is_signed;
 			logic        div_is_rem;
 
@@ -373,11 +391,39 @@ module core import common::*;(
 				mdu_is_word <= ex_r.is_word;
 
 				if (ex_r.alu_cmd == ALU_MUL) begin
-					mdu_busy <= 1'b1;
-					mdu_steps_left <= width_steps;
-					mdu_mul_acc <= 64'd0;
-					mdu_mul_a <= op1_eff & width_mask;
-					mdu_mul_b <= op2_eff & width_mask;
+					mul_src0 = op1_eff & width_mask;
+					mul_src1 = op2_eff & width_mask;
+					if ((mul_src0 == 64'd0) || (mul_src1 == 64'd0)) begin
+						final_val = 64'd0;
+						if (ex_r.is_word) mdu_out_result <= {{32{final_val[31]}}, final_val[31:0]};
+						else mdu_out_result <= final_val;
+						mdu_out_valid <= 1'b1;
+						mdu_busy <= 1'b0;
+					end else if (mul_src0 == 64'd1) begin
+						final_val = mul_src1;
+						if (ex_r.is_word) mdu_out_result <= {{32{final_val[31]}}, final_val[31:0]};
+						else mdu_out_result <= final_val;
+						mdu_out_valid <= 1'b1;
+						mdu_busy <= 1'b0;
+					end else if (mul_src1 == 64'd1) begin
+						final_val = mul_src0;
+						if (ex_r.is_word) mdu_out_result <= {{32{final_val[31]}}, final_val[31:0]};
+						else mdu_out_result <= final_val;
+						mdu_out_valid <= 1'b1;
+						mdu_busy <= 1'b0;
+					end else begin
+						// Put the smaller value on multiplier side to trigger zero-detection early stop sooner.
+						mdu_busy <= 1'b1;
+						mdu_steps_left <= width_steps;
+						mdu_mul_acc <= 64'd0;
+						if (mul_src0 <= mul_src1) begin
+							mdu_mul_a <= mul_src1;
+							mdu_mul_b <= mul_src0;
+						end else begin
+							mdu_mul_a <= mul_src0;
+							mdu_mul_b <= mul_src1;
+						end
+					end
 				end else begin
 					div_is_signed = (ex_r.alu_cmd == ALU_DIV) || (ex_r.alu_cmd == ALU_REM);
 					div_is_rem = (ex_r.alu_cmd == ALU_REM) || (ex_r.alu_cmd == ALU_REMU);
@@ -387,6 +433,12 @@ module core import common::*;(
 					op2_neg = div_is_signed && op2_eff[sign_bit];
 					dividend_abs = op1_neg ? ((~op1_eff + 64'd1) & width_mask) : (op1_eff & width_mask);
 					divisor_abs = op2_neg ? ((~op2_eff + 64'd1) & width_mask) : (op2_eff & width_mask);
+					div_is_pow2 = ((divisor_abs & (divisor_abs - 64'd1)) == 64'd0);
+					div_pow2_shift = 6'd0;
+					for (int b = 0; b < 64; b = b + 1) begin
+						if (divisor_abs[b]) div_pow2_shift = b[5:0];
+					end
+					div_pow2_mask = (div_pow2_shift == 6'd0) ? 64'd0 : ((64'd1 << div_pow2_shift) - 64'd1);
 					mdu_q_neg <= op1_neg ^ op2_neg;
 					mdu_r_neg <= op1_neg;
 
@@ -400,6 +452,54 @@ module core import common::*;(
 						((op1_eff & width_mask) == (ex_r.is_word ? 64'h0000_0000_8000_0000 : 64'h8000_0000_0000_0000)) &&
 						((op2_eff & width_mask) == (ex_r.is_word ? 64'h0000_0000_ffff_ffff : 64'hffff_ffff_ffff_ffff))) begin
 						final_val = (ex_r.alu_cmd == ALU_DIV) ? (op1_eff & width_mask) : 64'd0;
+						if (ex_r.is_word) mdu_out_result <= {{32{final_val[31]}}, final_val[31:0]};
+						else mdu_out_result <= final_val;
+						mdu_out_valid <= 1'b1;
+						mdu_busy <= 1'b0;
+					end else if (dividend_abs == 64'd0) begin
+						final_val = 64'd0;
+						if (ex_r.is_word) mdu_out_result <= {{32{final_val[31]}}, final_val[31:0]};
+						else mdu_out_result <= final_val;
+						mdu_out_valid <= 1'b1;
+						mdu_busy <= 1'b0;
+					end else if (divisor_abs == 64'd1) begin
+						div_q_abs_fast = dividend_abs & width_mask;
+						div_r_abs_fast = 64'd0;
+						q_unsigned = div_q_abs_fast & width_mask;
+						r_unsigned = div_r_abs_fast & width_mask;
+						final_val = div_is_rem ? r_unsigned : q_unsigned;
+						if (div_is_signed) begin
+							if (!div_is_rem && (op1_neg ^ op2_neg)) final_val = (~q_unsigned + 64'd1) & width_mask;
+							if (div_is_rem && op1_neg) final_val = (~r_unsigned + 64'd1) & width_mask;
+						end
+						if (ex_r.is_word) mdu_out_result <= {{32{final_val[31]}}, final_val[31:0]};
+						else mdu_out_result <= final_val;
+						mdu_out_valid <= 1'b1;
+						mdu_busy <= 1'b0;
+					end else if (dividend_abs < divisor_abs) begin
+						div_q_abs_fast = 64'd0;
+						div_r_abs_fast = dividend_abs & width_mask;
+						q_unsigned = div_q_abs_fast & width_mask;
+						r_unsigned = div_r_abs_fast & width_mask;
+						final_val = div_is_rem ? r_unsigned : q_unsigned;
+						if (div_is_signed) begin
+							if (!div_is_rem && (op1_neg ^ op2_neg)) final_val = (~q_unsigned + 64'd1) & width_mask;
+							if (div_is_rem && op1_neg) final_val = (~r_unsigned + 64'd1) & width_mask;
+						end
+						if (ex_r.is_word) mdu_out_result <= {{32{final_val[31]}}, final_val[31:0]};
+						else mdu_out_result <= final_val;
+						mdu_out_valid <= 1'b1;
+						mdu_busy <= 1'b0;
+					end else if (div_is_pow2) begin
+						div_q_abs_fast = (dividend_abs >> div_pow2_shift) & width_mask;
+						div_r_abs_fast = dividend_abs & div_pow2_mask;
+						q_unsigned = div_q_abs_fast & width_mask;
+						r_unsigned = div_r_abs_fast & width_mask;
+						final_val = div_is_rem ? r_unsigned : q_unsigned;
+						if (div_is_signed) begin
+							if (!div_is_rem && (op1_neg ^ op2_neg)) final_val = (~q_unsigned + 64'd1) & width_mask;
+							if (div_is_rem && op1_neg) final_val = (~r_unsigned + 64'd1) & width_mask;
+						end
 						if (ex_r.is_word) mdu_out_result <= {{32{final_val[31]}}, final_val[31:0]};
 						else mdu_out_result <= final_val;
 						mdu_out_valid <= 1'b1;
@@ -422,6 +522,11 @@ module core import common::*;(
 	always_ff @(posedge clk) begin
 		if (reset) begin
 			fetch_pc <= PCINIT;
+			fetch_pending <= 1'b0;
+			fetch_req_pc <= 64'd0;
+			fetch_buf_valid <= 1'b0;
+			fetch_buf_pc <= 64'd0;
+			fetch_buf_instr <= 32'd0;
 			id_r <= '0;
 			ex_r <= '0;
 			mem_r <= '0;
@@ -448,6 +553,8 @@ module core import common::*;(
 
 			if (trap_commit) begin
 				halted <= 1'b1;
+				fetch_pending <= 1'b0;
+				fetch_buf_valid <= 1'b0;
 				trap_valid_latched <= 1'b1;
 				trap_code_latched <= gpr[10][2:0];
 				trap_pc_latched <= wb_r.pc;
@@ -456,6 +563,20 @@ module core import common::*;(
 			end
 
 			if (!halted && !trap_commit) begin
+				if (fetch_resp_fire) begin
+					fetch_buf_valid <= 1'b1;
+					fetch_buf_pc <= fetch_req_addr;
+					fetch_buf_instr <= iresp.data;
+					fetch_pc <= fetch_req_addr + 64'd4;
+					fetch_pending <= 1'b0;
+				end else if (fetch_issue_fire) begin
+					fetch_pending <= 1'b1;
+					fetch_req_pc <= fetch_pc;
+				end
+				if (fetch_fire && !fetch_resp_fire) begin
+					fetch_buf_valid <= 1'b0;
+				end
+
 				wb_r.valid <= mem_r.valid;
 				wb_r.trap  <= mem_r.trap;
 				wb_r.wen   <= mem_r.wen;
@@ -488,9 +609,8 @@ module core import common::*;(
 
 					if (fetch_fire) begin
 						id_r.valid <= 1'b1;
-						id_r.pc    <= fetch_pc;
-						id_r.instr <= iresp.data;
-						fetch_pc   <= fetch_pc + 64'd4;
+						id_r.pc    <= fetch_buf_pc;
+						id_r.instr <= fetch_buf_instr;
 					end else begin
 						id_r.valid <= 1'b0;
 						id_r.pc    <= 64'd0;
