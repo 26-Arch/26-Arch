@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "skills": {
+    "fpga": {
+      "source": "mindrally/skills",
+      "sourceType": "github",
+      "computedHash": "31da460ffe99b4863b0398bbda7320aecd70a9d62c5229481cf1838a356c9140"
+    },
+    "systemverilog": {
+      "source": "mindrally/skills",
+      "sourceType": "github",
+      "computedHash": "d689908ace26f74a924f2d9871140f77f5c6d06922016c9b7da651ef4b40859f"
+    }
+  }
+}
