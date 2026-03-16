@@ -39,8 +39,6 @@ module core import common::*;(
 	logic        stall;
 
 	assign next_pc = pc + 64'd4;
-	// Phase 1: assume memory responds in 1 cycle; no stall to avoid combinational loop
-	assign stall   = 1'b0;
 
 	always_ff @(posedge clk) begin
 		if (reset)
@@ -172,7 +170,8 @@ module core import common::*;(
 	logic        wb_sel_ex;
 
 	always_ff @(posedge clk) begin
-		if (reset) begin
+		if (reset || load_use_hazard) begin
+			// Bubble: clear all control signals
 			pc_ex         <= 64'b0;
 			instr_ex      <= 32'b0;
 			inst_valid_ex <= 1'b0;
@@ -190,7 +189,7 @@ module core import common::*;(
 			mem_write_ex  <= 1'b0;
 			reg_write_ex  <= 1'b0;
 			wb_sel_ex     <= 1'b0;
-		end else if (!stall) begin
+		end else begin
 			pc_ex         <= pc_id;
 			instr_ex      <= instr_id;
 			inst_valid_ex <= inst_valid_id;
@@ -211,13 +210,37 @@ module core import common::*;(
 		end
 	end
 
-	// ========== 6. EX ALU ==========
+	// ========== Phase 3: Hazard Detection & Stall ==========
+	logic load_use_hazard;
+	assign load_use_hazard = mem_read_ex && (rd_ex != 5'b0) && (rd_ex == rs1_id || rd_ex == rs2_id);
+	assign stall = load_use_hazard;
+
+	// ========== 6. EX ALU (Phase 3: Forwarding) ==========
 	logic [63:0] alu_opA, alu_opB;
 	logic [63:0] alu_result_ex;
 	logic [31:0] alu_res_32;
 
-	assign alu_opA = rs1_data_ex;
-	assign alu_opB = alu_src_ex ? imm_ex : rs2_data_ex;
+	// Forwarding Mux for opA: EX hazard > MEM hazard > RegFile (rd==0 never forward)
+	always_comb begin
+		if (reg_write_mem && rd_mem != 5'b0 && rd_mem == rs1_ex)
+			alu_opA = alu_result_mem;
+		else if (reg_write_wb && rd_wb != 5'b0 && rd_wb == rs1_ex)
+			alu_opA = wb_data;
+		else
+			alu_opA = rs1_data_ex;
+	end
+
+	// Forwarding Mux for opB: only when alu_src_ex=0 (R-type uses rs2)
+	logic [63:0] rs2_forwarded;
+	always_comb begin
+		if (reg_write_mem && rd_mem != 5'b0 && rd_mem == rs2_ex)
+			rs2_forwarded = alu_result_mem;
+		else if (reg_write_wb && rd_wb != 5'b0 && rd_wb == rs2_ex)
+			rs2_forwarded = wb_data;
+		else
+			rs2_forwarded = rs2_data_ex;
+	end
+	assign alu_opB = alu_src_ex ? imm_ex : rs2_forwarded;
 
 	always_comb begin
 		alu_result_ex = alu_opA;
@@ -259,7 +282,8 @@ module core import common::*;(
 			mem_write_mem  <= 1'b0;
 			reg_write_mem  <= 1'b0;
 			wb_sel_mem     <= 1'b0;
-		end else if (!stall) begin
+		end else begin
+			// Phase 3: advance even when stall (let Load flow, avoid deadlock)
 			pc_mem         <= pc_ex;
 			instr_mem      <= instr_ex;
 			inst_valid_mem <= inst_valid_ex;
@@ -297,7 +321,8 @@ module core import common::*;(
 			mem_read_wb   <= 1'b0;
 			reg_write_wb  <= 1'b0;
 			wb_sel_wb     <= 1'b0;
-		end else if (!stall) begin
+		end else begin
+			// Phase 3: advance even when stall (let Load flow, avoid deadlock)
 			pc_wb         <= pc_mem;
 			instr_wb      <= instr_mem;
 			inst_valid_wb <= inst_valid_mem;
