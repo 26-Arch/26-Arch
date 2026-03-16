@@ -1,7 +1,43 @@
 ---
 name: Lab1 Phase1 Skeleton
 overview: 在 [vsrc/src/core.sv](vsrc/src/core.sv) 中搭建 RISC-V 5 级流水线骨架：实现 5 个组合逻辑阶段模块（IF/ID/EX/MEM/WB）、4 个时序逻辑段间寄存器、寄存器堆，并按规范串联；同时正确连接 Difftest 接口。
-todos: []
+todos:
+  - id: regfile
+    content: 实现 32x64 寄存器堆（2 读 1 写，x0 恒 0）
+    status: completed
+  - id: if-pc
+    content: 实现 PC 与 IF 逻辑，驱动 ireq
+    status: completed
+  - id: if-id-reg
+    content: 实现 IF_ID_Reg（含 inst_valid）
+    status: completed
+  - id: id-decode
+    content: 实现 ID 译码与 RegFile 读
+    status: completed
+  - id: id-ex-reg
+    content: 实现 ID_EX_Reg
+    status: completed
+  - id: ex-alu
+    content: 实现 EX 与 ALU 框架
+    status: completed
+  - id: ex-mem-reg
+    content: 实现 EX_MEM_Reg
+    status: completed
+  - id: mem-placeholder
+    content: 实现 MEM 占位（dreq.valid=0）
+    status: completed
+  - id: mem-wb-reg
+    content: 实现 MEM_WB_Reg
+    status: completed
+  - id: wb-regwrite
+    content: 实现 WB 与 RegFile 写
+    status: completed
+  - id: difftest
+    content: 连接 Difftest（inst_valid、旁路、wdest 位宽）
+    status: completed
+  - id: safety-check
+    content: 代码审查（无 * /、无越级、段间用 <=）
+    status: completed
 isProject: false
 ---
 
@@ -73,10 +109,14 @@ flowchart LR
     IF --> IF_ID --> ID --> ID_EX --> EX --> EX_MEM --> MEM --> MEM_WB --> WB
 ```
 
-**IF_ID**：`pc`, `instr`（32 位，来自 iresp.data）  
-**ID_EX**：`pc`, `instr`, `rs1_data`, `rs2_data`, `rd`, `rs1`, `rs2`, `imm`, `funct3`, `funct7`, 控制信号（`alu_op`, `mem_read`, `mem_write`, `reg_write`, `wb_sel` 等）  
-**EX_MEM**：`pc`, `alu_result`, `rs2_data`, `rd`, 控制信号  
-**MEM_WB**：`pc`, `alu_result`, `mem_data`（来自 dresp.data）, `rd`, 控制信号  
+
+
+**IF_ID**：`pc`, `instr`（32 位，来自 iresp.data）, `**inst_valid`**（取指成功时为 1，Bubble 时为 0）  
+**ID_EX**：`pc`, `instr`, `inst_valid`, `rs1_data`, `rs2_data`, `rd`, `rs1`, `rs2`, `imm`, `funct3`, `funct7`, 控制信号  
+**EX_MEM**：`pc`, `instr`, `inst_valid`, `alu_result`, `rs2_data`, `rd`, 控制信号  
+**MEM_WB**：`pc`, `instr`, `inst_valid`, `alu_result`, `mem_data`（来自 dresp.data）, `rd`, 控制信号  
+
+> **重要**：`inst_valid` 从 IF 起伴随 `instr`/`pc` 贯穿 4 个段间寄存器，用于 Difftest 的 valid 判断（分支、NOP 等不写寄存器的指令也需提交）。  
 
 ---
 
@@ -87,6 +127,7 @@ flowchart LR
 - **组合逻辑**：`next_pc = pc + 64'd4`（仅顺序取指，无分支）
 - **输出**：`ireq.valid = ~stall`, `ireq.addr = pc`
 - **输入**：`iresp.data_ok` 时锁存指令到 IF_ID
+- **inst_valid**：取指成功时 `inst_valid = iresp.data_ok`；插入 Bubble 时 `inst_valid = 0`。该信号随 instr/pc 贯穿 4 个段间寄存器。
 - **PC 更新**：时序逻辑，`posedge clk`：`reset` 时 `pc <= PCINIT`，否则 `pc <= next_pc`
 - **Stall**：当 `ireq.valid && !iresp.data_ok` 时，PC 与 IF_ID 不更新（Phase 1 可先假设内存单周期返回，后续再完善）
 
@@ -139,12 +180,26 @@ end
 
 将 WB 阶段输出接到 Difftest：
 
-- **DifftestInstrCommit**：`valid` = WB 有效（如 `reg_write_wb | mem_read_wb` 等），`pc` = `pc_wb`，`instr` = 从 MEM_WB 传下的 `instr`，`wen` = `reg_write_wb`，`wdest` = `rd_wb`，`wdata` = `wb_data`
-- **DifftestArchIntRegState**：`gpr_0`..`gpr_31` 接寄存器堆读出（或维护一份“提交后”的架构状态）
+### 5.1 DifftestInstrCommit
+
+- **valid**：使用 `inst_valid_wb`，而非 `reg_write_wb | mem_read_wb`。分支（BEQ/BNE）、NOP 等不写寄存器的指令也必须提交，否则 Difftest 会漏比。
+- **pc**：`pc_wb`
+- **instr**：从 MEM_WB 传下的 `instr_wb`
+- **wen**：`reg_write_wb`
+- **wdest**：**必须 8 位**，使用 `.wdest({3'b0, rd_wb})` 补齐
+- **wdata**：`wb_data`
+
+### 5.2 DifftestArchIntRegState（时序陷阱）
+
+- **问题**：同一时钟沿 WB 写 RegFile、Difftest 读 RegFile 时，可能读到**写入前的旧值**。
+- **正确做法**：对每个 `gpr_i`，若 `i == rd_wb && rd_wb != 0 && reg_write_wb`，则用 `wb_data` 旁路；否则用 RegFile 读出值。
+
+### 5.3 其他
+
 - **DifftestTrapEvent**：Phase 1 保持 `valid=0`
 - **DifftestCSRState**：Phase 1 保持占位值
 
-注意：`instr` 需从 IF_ID 经 ID_EX、EX_MEM 传到 MEM_WB，不能越级。
+注意：`instr`、`inst_valid` 需从 IF_ID 经 ID_EX、EX_MEM 传到 MEM_WB，不能越级。
 
 ---
 
@@ -173,6 +228,8 @@ flowchart TB
     MEM_WB --> WB
     WB --> RF
 ```
+
+
 
 ---
 
@@ -209,3 +266,16 @@ Phase 1 可先假设 `data_ok` 单周期有效，若仿真异常再补 stall 逻
 - 所有实现均在 [vsrc/src/core.sv](vsrc/src/core.sv)
 - 接口与类型见 [vsrc/include/common.sv](vsrc/include/common.sv)（`ibus_req_t`, `ibus_resp_t`, `dbus_req_t`, `dbus_resp_t`）
 - 参数 `PCINIT = 64'h8000_0000` 在 common.sv
+
+---
+
+## 10. 避坑要点（参考 Phase1_PlanFix.md）
+
+
+| 问题              | 错误做法                      | 正确做法                                |
+| --------------- | ------------------------- | ----------------------------------- |
+| Difftest valid  | 用 reg_write 或 mem_read 判断 | 用 inst_valid，从 IF 贯穿到 WB            |
+| ArchIntRegState | 直接接 RegFile 读出            | WB 旁路：若 `i==rd_wb` 且写使能，用 `wb_data` |
+| wdest 位宽        | 直接接 5 位 `rd_wb`           | 补齐为 8 位：`{3'b0, rd_wb}`             |
+
+
