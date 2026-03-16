@@ -7,25 +7,25 @@ todos:
     status: completed
   - id: id-control
     content: 实现 ID 控制逻辑（alu_op、alu_src、reg_write）
-    status: in_progress
+    status: completed
   - id: id-ex-alu-src
     content: 在 ID_EX_Reg 中新增 alu_src_ex 透传
-    status: pending
+    status: completed
   - id: ex-operand-mux
     content: 实现 EX 操作数选择 Mux（alu_src 选 imm 或 rs2）
-    status: pending
+    status: completed
   - id: ex-alu
     content: 实现 ALU 核心逻辑（含 W 型符号扩展）
     status: completed
   - id: immgen-verify
     content: 确认 ImmGen 为 64 位符号扩展
-    status: pending
+    status: completed
   - id: id-ex-complete
     content: 确认 ID_EX 所有控制信号透传完整
-    status: pending
+    status: completed
   - id: test-verify
     content: make test-lab1 验证并检查无乘除
-    status: pending
+    status: completed
 isProject: false
 ---
 
