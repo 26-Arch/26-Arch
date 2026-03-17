@@ -1,5 +1,10 @@
 `ifdef VERILATOR
 `include "include/common.sv"
+`include "src/core_regfile.sv"
+`include "src/core_decode.sv"
+`include "src/core_alu.sv"
+`include "src/core_hazard_unit.sv"
+`include "src/core_forwarding_unit.sv"
 `include "src/core.sv"
 `include "util/IBusToCBus.sv"
 `include "util/DBusToCBus.sv"

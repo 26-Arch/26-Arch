@@ -13,26 +13,12 @@ module core import common::*;(
 	input  dbus_resp_t dresp,
 	input  logic       trint, swint, exint
 );
-	// Phase 2: ALU operation codes
-	localparam logic [3:0] ALU_ADD  = 4'd0;
-	localparam logic [3:0] ALU_SUB  = 4'd1;
-	localparam logic [3:0] ALU_ADDW = 4'd2;
-	localparam logic [3:0] ALU_SUBW = 4'd3;
-	localparam logic [3:0] ALU_AND  = 4'd4;
-	localparam logic [3:0] ALU_OR   = 4'd5;
-	localparam logic [3:0] ALU_XOR  = 4'd6;
-
 	// ========== 1. Register File ==========
-	logic [63:0] rf [31:1];
 	logic [63:0] wb_data;
 	logic        reg_write_wb;
 	logic [4:0]  rd_wb;
-
-	// RegFile write at WB stage (no write during reset)
-	always_ff @(posedge clk) begin
-		if (!reset && reg_write_wb && rd_wb != 5'b0)
-			rf[rd_wb] <= wb_data;
-	end
+	logic [63:0] rs1_data_id_r, rs2_data_id_r;
+	logic [31:0][63:0] rf_dbg;
 
 	// ========== 2. PC & IF ==========
 	logic [63:0] pc, next_pc;
@@ -68,95 +54,46 @@ module core import common::*;(
 	end
 
 	// ========== 4. ID Decode ==========
-	logic [6:0]  opcode_id;
+	decode_out_t decode_id;
 	logic [4:0]  rd_id, rs1_id, rs2_id;
 	logic [2:0]  funct3_id;
 	logic [6:0]  funct7_id;
 	logic [63:0] imm_id;
-	logic [3:0]  alu_op_id;
+	alu_op_t     alu_op_id;
 	logic        alu_src_id;
 	logic        mem_read_id, mem_write_id, reg_write_id;
 	logic        wb_sel_id;
 
-	assign opcode_id = instr_id[6:0];
-	assign rd_id     = instr_id[11:7];
-	assign rs1_id    = instr_id[19:15];
-	assign rs2_id    = instr_id[24:20];
-	assign funct3_id = instr_id[14:12];
-	assign funct7_id = instr_id[31:25];
+	core_decode decode(
+		.instr      (instr_id),
+		.decode_out (decode_id)
+	);
 
-	// I-type imm
-	always_comb begin
-		imm_id = 64'b0;
-		case (opcode_id)
-			7'b0010011, 7'b0000011, 7'b1100111, 7'b0011011: begin  // I-type (incl. ADDIW)
-				imm_id = {{52{instr_id[31]}}, instr_id[31:20]};
-			end
-			7'b0100011: begin  // S-type
-				imm_id = {{52{instr_id[31]}}, instr_id[31:25], instr_id[11:7]};
-			end
-			7'b1100011: begin  // B-type
-				imm_id = {{52{instr_id[31]}}, instr_id[7], instr_id[30:25], instr_id[11:8], 1'b0};
-			end
-			7'b0110111, 7'b0010111: begin  // U-type
-				imm_id = {{32{instr_id[31]}}, instr_id[31:12], 12'b0};
-			end
-			7'b1101111: begin  // J-type
-				imm_id = {{44{instr_id[31]}}, instr_id[19:12], instr_id[20], instr_id[30:21], 1'b0};
-			end
-			default: imm_id = 64'b0;
-		endcase
-	end
+	assign rd_id       = decode_id.rd;
+	assign rs1_id      = decode_id.rs1;
+	assign rs2_id      = decode_id.rs2;
+	assign funct3_id   = decode_id.funct3;
+	assign funct7_id   = decode_id.funct7;
+	assign imm_id      = decode_id.imm;
+	assign alu_op_id   = decode_id.alu_op;
+	assign alu_src_id  = decode_id.alu_src;
+	assign mem_read_id = decode_id.mem_read;
+	assign mem_write_id = decode_id.mem_write;
+	assign reg_write_id = decode_id.reg_write;
+	assign wb_sel_id    = decode_id.wb_sel;
 
-	// Control signals (Phase 2: real control logic)
-	always_comb begin
-		alu_op_id    = ALU_ADD;
-		alu_src_id   = 1'b0;
-		reg_write_id = 1'b0;
-		mem_read_id  = 1'b0;
-		mem_write_id = 1'b0;
-		wb_sel_id    = 1'b0;
-		case (opcode_id)
-			7'b0010011: begin  // I-type ALU (ADDI, ANDI, ORI, XORI)
-				reg_write_id = 1'b1;
-				alu_src_id   = 1'b1;
-				case (funct3_id)
-					3'b000: alu_op_id = ALU_ADD;
-					3'b100: alu_op_id = ALU_XOR;
-					3'b110: alu_op_id = ALU_OR;
-					3'b111: alu_op_id = ALU_AND;
-					default: ;
-				endcase
-			end
-			7'b0011011: begin  // ADDIW
-				reg_write_id = 1'b1;
-				alu_src_id   = 1'b1;
-				alu_op_id    = ALU_ADDW;
-			end
-			7'b0110011: begin  // R-type (ADD, SUB, AND, OR, XOR)
-				reg_write_id = 1'b1;
-				case (funct3_id)
-					3'b000: alu_op_id = (funct7_id[5]) ? ALU_SUB : ALU_ADD;
-					3'b100: alu_op_id = ALU_XOR;
-					3'b110: alu_op_id = ALU_OR;
-					3'b111: alu_op_id = ALU_AND;
-					default: ;
-				endcase
-			end
-			7'b0111011: begin  // R-type W (ADDW, SUBW)
-				reg_write_id = 1'b1;
-				alu_op_id    = (funct7_id[5]) ? ALU_SUBW : ALU_ADDW;
-			end
-			default: ;
-		endcase
-	end
-
-	// RegFile read - fix: use rs1_id, rs2_id
-	logic [63:0] rs1_data_id_r, rs2_data_id_r;
-	always_comb begin
-		rs1_data_id_r = (rs1_id == 5'b0) ? 64'b0 : rf[rs1_id];
-		rs2_data_id_r = (rs2_id == 5'b0) ? 64'b0 : rf[rs2_id];
-	end
+	core_regfile regfile(
+		.clk      (clk),
+		.reset    (reset),
+		.wen      (reg_write_wb),
+		.waddr    (rd_wb),
+		.wdata    (wb_data),
+		.raddr1   (rs1_id),
+		.raddr2   (rs2_id),
+		.rdata1   (rs1_data_id_r),
+		.rdata2   (rs2_data_id_r),
+		.regs_dbg (rf_dbg)
+	);
 
 	// ========== 5. ID_EX Reg ==========
 	logic [63:0] pc_ex, rs1_data_ex, rs2_data_ex, imm_ex;
@@ -164,7 +101,7 @@ module core import common::*;(
 	logic [4:0]  rd_ex, rs1_ex, rs2_ex;
 	logic [2:0]  funct3_ex;
 	logic [6:0]  funct7_ex;
-	logic [3:0]  alu_op_ex;
+	alu_op_t     alu_op_ex;
 	logic        alu_src_ex;
 	logic        inst_valid_ex, mem_read_ex, mem_write_ex, reg_write_ex;
 	logic        wb_sel_ex;
@@ -183,7 +120,7 @@ module core import common::*;(
 			imm_ex        <= 64'b0;
 			funct3_ex     <= 3'b0;
 			funct7_ex     <= 7'b0;
-			alu_op_ex     <= 4'b0;
+			alu_op_ex     <= ALU_ADD;
 			alu_src_ex    <= 1'b0;
 			mem_read_ex   <= 1'b0;
 			mem_write_ex  <= 1'b0;
@@ -212,56 +149,44 @@ module core import common::*;(
 
 	// ========== Phase 3: Hazard Detection & Stall ==========
 	logic load_use_hazard;
-	assign load_use_hazard = mem_read_ex && (rd_ex != 5'b0) && (rd_ex == rs1_id || rd_ex == rs2_id);
+
+	core_hazard_unit hazard_unit(
+		.mem_read_ex     (mem_read_ex),
+		.rd_ex           (rd_ex),
+		.rs1_id          (rs1_id),
+		.rs2_id          (rs2_id),
+		.load_use_hazard (load_use_hazard)
+	);
+
 	assign stall = load_use_hazard;
 
 	// ========== 6. EX ALU (Phase 3: Forwarding) ==========
-	logic [63:0] alu_opA, alu_opB;
+	logic [63:0] alu_opA, alu_opB, rs2_forwarded;
 	logic [63:0] alu_result_ex;
-	logic [31:0] alu_res_32;
 
-	// Forwarding Mux for opA: EX hazard > MEM hazard > RegFile (rd==0 never forward)
-	always_comb begin
-		if (reg_write_mem && rd_mem != 5'b0 && rd_mem == rs1_ex)
-			alu_opA = alu_result_mem;
-		else if (reg_write_wb && rd_wb != 5'b0 && rd_wb == rs1_ex)
-			alu_opA = wb_data;
-		else
-			alu_opA = rs1_data_ex;
-	end
+	core_forwarding_unit forwarding_unit(
+		.rs1_ex         (rs1_ex),
+		.rs2_ex         (rs2_ex),
+		.rs1_data_ex    (rs1_data_ex),
+		.rs2_data_ex    (rs2_data_ex),
+		.reg_write_mem  (reg_write_mem),
+		.rd_mem         (rd_mem),
+		.alu_result_mem (alu_result_mem),
+		.reg_write_wb   (reg_write_wb),
+		.rd_wb          (rd_wb),
+		.wb_data        (wb_data),
+		.op_a_forwarded (alu_opA),
+		.rs2_forwarded  (rs2_forwarded)
+	);
 
-	// Forwarding Mux for opB: only when alu_src_ex=0 (R-type uses rs2)
-	logic [63:0] rs2_forwarded;
-	always_comb begin
-		if (reg_write_mem && rd_mem != 5'b0 && rd_mem == rs2_ex)
-			rs2_forwarded = alu_result_mem;
-		else if (reg_write_wb && rd_wb != 5'b0 && rd_wb == rs2_ex)
-			rs2_forwarded = wb_data;
-		else
-			rs2_forwarded = rs2_data_ex;
-	end
 	assign alu_opB = alu_src_ex ? imm_ex : rs2_forwarded;
 
-	always_comb begin
-		alu_result_ex = alu_opA;
-		alu_res_32    = 32'b0;
-		case (alu_op_ex)
-			ALU_ADD:  alu_result_ex = alu_opA + alu_opB;
-			ALU_SUB:  alu_result_ex = alu_opA - alu_opB;
-			ALU_AND:  alu_result_ex = alu_opA & alu_opB;
-			ALU_OR:   alu_result_ex = alu_opA | alu_opB;
-			ALU_XOR:  alu_result_ex = alu_opA ^ alu_opB;
-			ALU_ADDW: begin
-				alu_res_32    = alu_opA[31:0] + alu_opB[31:0];
-				alu_result_ex = {{32{alu_res_32[31]}}, alu_res_32};
-			end
-			ALU_SUBW: begin
-				alu_res_32    = alu_opA[31:0] - alu_opB[31:0];
-				alu_result_ex = {{32{alu_res_32[31]}}, alu_res_32};
-			end
-			default: alu_result_ex = alu_opA;
-		endcase
-	end
+	core_alu alu(
+		.alu_op (alu_op_ex),
+		.op_a   (alu_opA),
+		.op_b   (alu_opB),
+		.result (alu_result_ex)
+	);
 
 	// ========== 7. EX_MEM Reg ==========
 	logic [63:0] pc_mem, alu_result_mem, rs2_data_mem;
@@ -347,7 +272,7 @@ module core import common::*;(
 			else if (reg_write_wb && rd_wb == i[4:0])
 				gpr_dt[i] = wb_data;
 			else
-				gpr_dt[i] = rf[i];
+				gpr_dt[i] = rf_dbg[i];
 		end
 	end
 
