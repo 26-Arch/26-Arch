@@ -6,11 +6,6 @@
 `else
 
 `endif
-/**
- * this implementation is not efficient, since
- * it adds one cycle lantency to all requests.
- */
-
 module CBusArbiter
 	import common::*;#(
     parameter int NUM_INPUTS = 2,  // NOTE: NUM_INPUTS >= 1
@@ -59,8 +54,15 @@ module CBusArbiter
     always_ff @(posedge clk)
     if (~reset) begin
         if (busy) begin
-            if (oresp.last)
-                {busy, saved_req} <= '0;
+            if (oresp.last) begin
+                if (selected_req.valid) begin
+                    busy <= 1'b1;
+                    index <= select;
+                    saved_req <= selected_req;
+                end else begin
+                    {busy, saved_req} <= '0;
+                end
+            end
         end else begin
             // if not valid, busy <= 0
             busy <= selected_req.valid;

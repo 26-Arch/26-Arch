@@ -21,11 +21,16 @@ module core import common::*;(
 	localparam logic [3:0] ALU_XOR  = 4'd2;
 	localparam logic [3:0] ALU_OR   = 4'd3;
 	localparam logic [3:0] ALU_AND  = 4'd4;
-	localparam logic [3:0] ALU_MUL  = 4'd5;
-	localparam logic [3:0] ALU_DIV  = 4'd6;
-	localparam logic [3:0] ALU_DIVU = 4'd7;
-	localparam logic [3:0] ALU_REM  = 4'd8;
-	localparam logic [3:0] ALU_REMU = 4'd9;
+	localparam logic [3:0] ALU_SLL  = 4'd5;
+	localparam logic [3:0] ALU_SRL  = 4'd6;
+	localparam logic [3:0] ALU_SRA  = 4'd7;
+	localparam logic [3:0] ALU_SLT  = 4'd8;
+	localparam logic [3:0] ALU_SLTU = 4'd9;
+	localparam logic [3:0] ALU_MUL  = 4'd10;
+	localparam logic [3:0] ALU_DIV  = 4'd11;
+	localparam logic [3:0] ALU_DIVU = 4'd12;
+	localparam logic [3:0] ALU_REM  = 4'd13;
+	localparam logic [3:0] ALU_REMU = 4'd14;
 
 	typedef struct packed {
 		logic        valid;
@@ -44,6 +49,17 @@ module core import common::*;(
 		logic [31:0] instr;
 		logic [63:0] op1;
 		logic [63:0] op2;
+		logic [63:0] imm;
+		logic [63:0] rs2_store;
+		logic        is_load;
+		logic        is_store;
+		logic [2:0]  mem_size;
+		logic        mem_unsigned;
+		logic        is_branch;
+		logic [2:0]  br_funct3;
+		logic        is_jal;
+		logic        is_jalr;
+		logic        wb_pc4;
 	} ex_reg_t;
 
 	typedef struct packed {
@@ -54,6 +70,13 @@ module core import common::*;(
 		logic [63:0] pc;
 		logic [31:0] instr;
 		logic [63:0] result;
+		logic        is_load;
+		logic        is_store;
+		logic [2:0]  mem_size;
+		logic        mem_unsigned;
+		logic [63:0] mem_addr;
+		logic [63:0] mem_wdata;
+		logic [7:0]  mem_wstrb;
 	} wb_like_reg_t;
 
 	logic [63:0] gpr [31:0];
@@ -67,7 +90,12 @@ module core import common::*;(
 	logic [63:0] fetch_buf_pc;
 	logic [31:0] fetch_buf_instr;
 	logic        fetch_issue_fire;
+	logic        fetch_req_new_fire;
 	logic        fetch_resp_fire;
+	logic        fetch_pop_buf;
+	logic        fetch_resp_to_id;
+	logic        fetch_resp_to_buf;
+	logic        fetch_can_consume;
 	logic [63:0] fetch_req_addr;
 
 	id_reg_t      id_r;
@@ -80,6 +108,10 @@ module core import common::*;(
 
 	logic [63:0] id_rs1_val, id_rs2_val;
 	logic [63:0] id_imm_i;
+	logic [63:0] id_imm_s;
+	logic [63:0] id_imm_b;
+	logic [63:0] id_imm_u;
+	logic [63:0] id_imm_j;
 	logic [6:0]  id_opcode;
 	logic [2:0]  id_funct3;
 	logic [6:0]  id_funct7;
@@ -92,7 +124,18 @@ module core import common::*;(
 	logic        id_dec_is_word;
 	logic [3:0]  id_dec_alu_cmd;
 	logic [63:0] id_dec_op1, id_dec_op2;
+	logic [63:0] id_dec_imm;
+	logic [63:0] id_dec_rs2_store;
 	logic [4:0]  id_dec_rd;
+	logic        id_dec_is_load;
+	logic        id_dec_is_store;
+	logic [2:0]  id_dec_mem_size;
+	logic        id_dec_mem_unsigned;
+	logic        id_dec_is_branch;
+	logic [2:0]  id_dec_br_funct3;
+	logic        id_dec_is_jal;
+	logic        id_dec_is_jalr;
+	logic        id_dec_wb_pc4;
 
 	logic        halted;
 	logic        trap_commit;
@@ -109,10 +152,27 @@ module core import common::*;(
 	logic        ex_result_ready;
 	logic        ex_forwardable;
 	logic        stall_ex_busy;
+	logic        stall_mem_busy;
+	logic        stall_if_mem;
 	logic        raw_hazard_ex;
 	logic        raw_hazard_mem;
+	logic        stall_pipe;
 	logic        stall_front;
 	logic        mem_result_ready;
+	logic        mem_access_done;
+	logic [63:0] mem_load_data;
+	logic [63:0] mem_stage_result;
+	logic [63:0] mem_aligned_data;
+	logic [5:0]  mem_byte_shift;
+	logic [63:0] mem_store_data_shifted;
+	logic [7:0]  mem_store_strobe;
+	logic [63:0] ex_mem_addr;
+	logic [63:0] ex_next_pc;
+	logic        ex_branch_taken;
+	logic        ex_flush_front;
+	logic [63:0] ex_redirect_pc;
+	logic        fetch_redirect_pending;
+	logic [63:0] fetch_redirect_pc;
 	logic        mdu_busy;
 	logic        mdu_out_valid;
 	logic [63:0] mdu_out_result;
@@ -138,26 +198,39 @@ module core import common::*;(
 		end
 	endfunction
 
-
-	assign dreq = '0;
 	assign ex_is_mdu = is_mdu_cmd(ex_r.alu_cmd);
-	assign ex_result_ready = !ex_is_mdu || mdu_out_valid;
-	assign stall_ex_busy = ex_r.valid && !ex_result_ready;
+	assign ex_result_ready = ex_is_mdu ? mdu_out_valid : !ex_r.is_load;
+	assign stall_ex_busy = ex_r.valid && ex_is_mdu && !mdu_out_valid;
 	assign ex_forwardable = ex_r.valid && ex_r.wen && (ex_r.rd != 0) && ex_result_ready;
-	assign mem_result_ready = 1'b1;
+	assign mem_access_done = (!mem_r.is_load && !mem_r.is_store) || dresp.data_ok;
+	assign mem_result_ready = !mem_r.valid || !mem_r.is_load || mem_access_done;
+	assign stall_mem_busy = mem_r.valid && (mem_r.is_load || mem_r.is_store) && !mem_access_done;
+	assign stall_if_mem = mem_r.valid && (mem_r.is_load || mem_r.is_store);
 	assign raw_hazard_ex =
 		id_r.valid && ex_r.valid && ex_r.wen && (ex_r.rd != 0) && !ex_result_ready &&
 		((id_use_rs1 && (id_rs1 == ex_r.rd)) || (id_use_rs2 && (id_rs2 == ex_r.rd)));
 	assign raw_hazard_mem =
-		id_r.valid && mem_r.valid && mem_r.wen && (mem_r.rd != 0) && !mem_result_ready &&
+		id_r.valid && mem_r.valid && mem_r.wen && (mem_r.rd != 0) && stall_if_mem &&
 		((id_use_rs1 && (id_rs1 == mem_r.rd)) || (id_use_rs2 && (id_rs2 == mem_r.rd)));
-	assign stall_front = stall_ex_busy || raw_hazard_ex || raw_hazard_mem;
-	assign fetch_fire = (!halted) && (!stall_front) && fetch_buf_valid;
-	assign fetch_issue_fire = (!halted) && (!stall_front) && (!fetch_pending) && (!fetch_buf_valid || fetch_fire);
+	assign stall_pipe = stall_ex_busy || stall_mem_busy || raw_hazard_ex || raw_hazard_mem;
+	assign stall_front = stall_ex_busy || raw_hazard_ex || raw_hazard_mem || fetch_redirect_pending || stall_if_mem;
+	assign fetch_can_consume = (!halted) && (!trap_commit) && (!stall_front) && !ex_flush_front;
+	assign fetch_pop_buf = fetch_can_consume && fetch_buf_valid;
+	assign fetch_resp_fire = fetch_pending && iresp.data_ok;
+	assign fetch_resp_to_id = fetch_can_consume && (!fetch_buf_valid) && fetch_resp_fire;
+	assign fetch_resp_to_buf = fetch_resp_fire && !fetch_resp_to_id;
+	assign fetch_fire = fetch_pop_buf || fetch_resp_to_id;
+	assign fetch_req_new_fire = fetch_can_consume && (!fetch_pending);
+	assign fetch_issue_fire = fetch_req_new_fire;
 	assign fetch_req_addr = fetch_pending ? fetch_req_pc : fetch_pc;
-	assign ireq.valid = !halted && (fetch_pending || fetch_issue_fire);
+	assign ireq.valid = !halted && !trap_commit && (fetch_pending || fetch_issue_fire);
 	assign ireq.addr  = fetch_req_addr;
-	assign fetch_resp_fire = ireq.valid && iresp.data_ok;
+
+	assign dreq.valid  = mem_r.valid && (mem_r.is_load || mem_r.is_store) && !trap_commit;
+	assign dreq.addr   = mem_r.mem_addr;
+	assign dreq.size   = msize_t'(mem_r.mem_size);
+	assign dreq.strobe = mem_r.mem_wstrb;
+	assign dreq.data   = mem_r.mem_wdata;
 
 	assign id_opcode = id_r.instr[6:0];
 	assign id_funct3 = id_r.instr[14:12];
@@ -166,8 +239,13 @@ module core import common::*;(
 	assign id_rs2    = id_r.instr[24:20];
 	assign id_rd     = id_r.instr[11:7];
 	assign id_imm_i  = {{52{id_r.instr[31]}}, id_r.instr[31:20]};
-	assign id_use_rs1 = (id_opcode == 7'b0010011) || (id_opcode == 7'b0110011) || (id_opcode == 7'b0011011) || (id_opcode == 7'b0111011);
-	assign id_use_rs2 = (id_opcode == 7'b0110011) || (id_opcode == 7'b0111011);
+	assign id_imm_s  = {{52{id_r.instr[31]}}, id_r.instr[31:25], id_r.instr[11:7]};
+	assign id_imm_b  = {{51{id_r.instr[31]}}, id_r.instr[31], id_r.instr[7], id_r.instr[30:25], id_r.instr[11:8], 1'b0};
+	assign id_imm_u  = {{32{id_r.instr[31]}}, id_r.instr[31:12], 12'd0};
+	assign id_imm_j  = {{43{id_r.instr[31]}}, id_r.instr[31], id_r.instr[19:12], id_r.instr[20], id_r.instr[30:21], 1'b0};
+	assign id_use_rs1 = (id_opcode == 7'b0010011) || (id_opcode == 7'b0110011) || (id_opcode == 7'b0011011) || (id_opcode == 7'b0111011) ||
+	                    (id_opcode == 7'b0000011) || (id_opcode == 7'b0100011) || (id_opcode == 7'b1100011) || (id_opcode == 7'b1100111);
+	assign id_use_rs2 = (id_opcode == 7'b0110011) || (id_opcode == 7'b0111011) || (id_opcode == 7'b0100011) || (id_opcode == 7'b1100011);
 
 	always_comb begin
 		id_rs1_val = (id_rs1 == 0) ? 64'd0 : gpr[id_rs1];
@@ -190,16 +268,90 @@ module core import common::*;(
 		id_dec_alu_cmd = ALU_ADD;
 		id_dec_op1     = id_rs1_val;
 		id_dec_op2     = id_rs2_val;
+		id_dec_imm     = id_imm_i;
+		id_dec_rs2_store = id_rs2_val;
 		id_dec_rd      = id_rd;
+		id_dec_is_load = 1'b0;
+		id_dec_is_store = 1'b0;
+		id_dec_mem_size = MSIZE8;
+		id_dec_mem_unsigned = 1'b0;
+		id_dec_is_branch = 1'b0;
+		id_dec_br_funct3 = 3'd0;
+		id_dec_is_jal = 1'b0;
+		id_dec_is_jalr = 1'b0;
+		id_dec_wb_pc4 = 1'b0;
 
 		if (id_r.instr == TRAP_INSN) begin
 			id_dec_trap = 1'b1;
 		end else begin
 			unique case (id_opcode)
+				7'b0110111: begin // LUI
+					id_dec_wen = 1'b1;
+					id_dec_op1 = 64'd0;
+					id_dec_op2 = id_imm_u;
+				end
+				7'b0010111: begin // AUIPC
+					id_dec_wen = 1'b1;
+					id_dec_op1 = id_r.pc;
+					id_dec_op2 = id_imm_u;
+				end
+				7'b1101111: begin // JAL
+					id_dec_wen = 1'b1;
+					id_dec_is_jal = 1'b1;
+					id_dec_wb_pc4 = 1'b1;
+					id_dec_imm = id_imm_j;
+				end
+				7'b1100111: begin // JALR
+					if (id_funct3 == 3'b000) begin
+						id_dec_wen = 1'b1;
+						id_dec_is_jalr = 1'b1;
+						id_dec_wb_pc4 = 1'b1;
+						id_dec_imm = id_imm_i;
+					end
+				end
+				7'b1100011: begin // BRANCH
+					id_dec_is_branch = 1'b1;
+					id_dec_br_funct3 = id_funct3;
+					id_dec_imm = id_imm_b;
+				end
+				7'b0000011: begin // LOAD
+					id_dec_wen = 1'b1;
+					id_dec_is_load = 1'b1;
+					id_dec_imm = id_imm_i;
+					unique case (id_funct3)
+						3'b000: begin id_dec_mem_size = MSIZE1; id_dec_mem_unsigned = 1'b0; end // LB
+						3'b001: begin id_dec_mem_size = MSIZE2; id_dec_mem_unsigned = 1'b0; end // LH
+						3'b010: begin id_dec_mem_size = MSIZE4; id_dec_mem_unsigned = 1'b0; end // LW
+						3'b011: begin id_dec_mem_size = MSIZE8; id_dec_mem_unsigned = 1'b0; end // LD
+						3'b100: begin id_dec_mem_size = MSIZE1; id_dec_mem_unsigned = 1'b1; end // LBU
+						3'b101: begin id_dec_mem_size = MSIZE2; id_dec_mem_unsigned = 1'b1; end // LHU
+						3'b110: begin id_dec_mem_size = MSIZE4; id_dec_mem_unsigned = 1'b1; end // LWU
+						default: begin id_dec_valid = 1'b0; end
+					endcase
+				end
+				7'b0100011: begin // STORE
+					id_dec_is_store = 1'b1;
+					id_dec_imm = id_imm_s;
+					unique case (id_funct3)
+						3'b000: id_dec_mem_size = MSIZE1; // SB
+						3'b001: id_dec_mem_size = MSIZE2; // SH
+						3'b010: id_dec_mem_size = MSIZE4; // SW
+						3'b011: id_dec_mem_size = MSIZE8; // SD
+						default: begin id_dec_valid = 1'b0; end
+					endcase
+				end
 				7'b0010011: begin
 					unique case (id_funct3)
 						3'b000: begin id_dec_wen = 1'b1; id_dec_alu_cmd = ALU_ADD; id_dec_op2 = id_imm_i; end
+						3'b001: begin id_dec_wen = 1'b1; id_dec_alu_cmd = ALU_SLL; id_dec_op2 = {58'd0, id_r.instr[25:20]}; end
+						3'b010: begin id_dec_wen = 1'b1; id_dec_alu_cmd = ALU_SLT; id_dec_op2 = id_imm_i; end
+						3'b011: begin id_dec_wen = 1'b1; id_dec_alu_cmd = ALU_SLTU; id_dec_op2 = id_imm_i; end
 						3'b100: begin id_dec_wen = 1'b1; id_dec_alu_cmd = ALU_XOR; id_dec_op2 = id_imm_i; end
+						3'b101: begin
+							id_dec_wen = 1'b1;
+							id_dec_alu_cmd = id_funct7[5] ? ALU_SRA : ALU_SRL;
+							id_dec_op2 = {58'd0, id_r.instr[25:20]};
+						end
 						3'b110: begin id_dec_wen = 1'b1; id_dec_alu_cmd = ALU_OR;  id_dec_op2 = id_imm_i; end
 						3'b111: begin id_dec_wen = 1'b1; id_dec_alu_cmd = ALU_AND; id_dec_op2 = id_imm_i; end
 						default: begin end
@@ -218,7 +370,11 @@ module core import common::*;(
 					end else begin
 						unique case (id_funct3)
 							3'b000: begin id_dec_wen = 1'b1; id_dec_alu_cmd = id_funct7[5] ? ALU_SUB : ALU_ADD; end
+							3'b001: begin id_dec_wen = 1'b1; id_dec_alu_cmd = ALU_SLL; end
+							3'b010: begin id_dec_wen = 1'b1; id_dec_alu_cmd = ALU_SLT; end
+							3'b011: begin id_dec_wen = 1'b1; id_dec_alu_cmd = ALU_SLTU; end
 							3'b100: begin id_dec_wen = 1'b1; id_dec_alu_cmd = ALU_XOR; end
+							3'b101: begin id_dec_wen = 1'b1; id_dec_alu_cmd = id_funct7[5] ? ALU_SRA : ALU_SRL; end
 							3'b110: begin id_dec_wen = 1'b1; id_dec_alu_cmd = ALU_OR;  end
 							3'b111: begin id_dec_wen = 1'b1; id_dec_alu_cmd = ALU_AND; end
 							default: begin end
@@ -226,12 +382,27 @@ module core import common::*;(
 					end
 				end
 				7'b0011011: begin
-					if (id_funct3 == 3'b000) begin
-						id_dec_wen = 1'b1;
-						id_dec_is_word = 1'b1;
-						id_dec_alu_cmd = ALU_ADD;
-						id_dec_op2 = id_imm_i;
-					end
+					unique case (id_funct3)
+						3'b000: begin
+							id_dec_wen = 1'b1;
+							id_dec_is_word = 1'b1;
+							id_dec_alu_cmd = ALU_ADD;
+							id_dec_op2 = id_imm_i;
+						end
+						3'b001: begin
+							id_dec_wen = 1'b1;
+							id_dec_is_word = 1'b1;
+							id_dec_alu_cmd = ALU_SLL;
+							id_dec_op2 = {59'd0, id_r.instr[24:20]};
+						end
+						3'b101: begin
+							id_dec_wen = 1'b1;
+							id_dec_is_word = 1'b1;
+							id_dec_alu_cmd = id_funct7[5] ? ALU_SRA : ALU_SRL;
+							id_dec_op2 = {59'd0, id_r.instr[24:20]};
+						end
+						default: begin end
+					endcase
 				end
 				7'b0111011: begin
 					if (id_funct7 == 7'b0000001) begin
@@ -243,10 +414,13 @@ module core import common::*;(
 							3'b111: begin id_dec_wen = 1'b1; id_dec_is_word = 1'b1; id_dec_alu_cmd = ALU_REMU; end
 							default: begin end
 						endcase
-					end else if (id_funct3 == 3'b000) begin
-						id_dec_wen = 1'b1;
-						id_dec_is_word = 1'b1;
-						id_dec_alu_cmd = id_funct7[5] ? ALU_SUB : ALU_ADD;
+					end else begin
+						unique case (id_funct3)
+							3'b000: begin id_dec_wen = 1'b1; id_dec_is_word = 1'b1; id_dec_alu_cmd = id_funct7[5] ? ALU_SUB : ALU_ADD; end
+							3'b001: begin id_dec_wen = 1'b1; id_dec_is_word = 1'b1; id_dec_alu_cmd = ALU_SLL; end
+							3'b101: begin id_dec_wen = 1'b1; id_dec_is_word = 1'b1; id_dec_alu_cmd = id_funct7[5] ? ALU_SRA : ALU_SRL; end
+							default: begin end
+						endcase
 					end
 				end
 				default: begin end
@@ -262,6 +436,11 @@ module core import common::*;(
 			ALU_XOR: ex_result = ex_r.op1 ^ ex_r.op2;
 			ALU_OR : ex_result = ex_r.op1 | ex_r.op2;
 			ALU_AND: ex_result = ex_r.op1 & ex_r.op2;
+			ALU_SLL: ex_result = ex_r.op1 << (ex_r.is_word ? {1'b0, ex_r.op2[4:0]} : ex_r.op2[5:0]);
+			ALU_SRL: ex_result = ex_r.op1 >> (ex_r.is_word ? {1'b0, ex_r.op2[4:0]} : ex_r.op2[5:0]);
+			ALU_SRA: ex_result = $signed(ex_r.op1) >>> (ex_r.is_word ? {1'b0, ex_r.op2[4:0]} : ex_r.op2[5:0]);
+			ALU_SLT: ex_result = ($signed(ex_r.op1) < $signed(ex_r.op2)) ? 64'd1 : 64'd0;
+			ALU_SLTU: ex_result = (ex_r.op1 < ex_r.op2) ? 64'd1 : 64'd0;
 			ALU_MUL,
 			ALU_DIV,
 			ALU_DIVU,
@@ -272,10 +451,60 @@ module core import common::*;(
 
 		ex_result_word = {{32{ex_result[31]}}, ex_result[31:0]};
 		if (ex_r.is_word &&
-			(ex_r.alu_cmd == ALU_ADD || ex_r.alu_cmd == ALU_SUB || ex_r.alu_cmd == ALU_XOR || ex_r.alu_cmd == ALU_OR || ex_r.alu_cmd == ALU_AND)) begin
+			(ex_r.alu_cmd == ALU_ADD || ex_r.alu_cmd == ALU_SUB || ex_r.alu_cmd == ALU_XOR || ex_r.alu_cmd == ALU_OR || ex_r.alu_cmd == ALU_AND ||
+			 ex_r.alu_cmd == ALU_SLL || ex_r.alu_cmd == ALU_SRL || ex_r.alu_cmd == ALU_SRA)) begin
 			ex_result = ex_result_word;
 		end
 	end
+
+	always_comb begin
+		ex_branch_taken = 1'b0;
+		if (ex_r.is_branch) begin
+			unique case (ex_r.br_funct3)
+				3'b000: ex_branch_taken = (ex_r.op1 == ex_r.op2);                 // BEQ
+				3'b001: ex_branch_taken = (ex_r.op1 != ex_r.op2);                 // BNE
+				3'b100: ex_branch_taken = ($signed(ex_r.op1) < $signed(ex_r.op2)); // BLT
+				3'b101: ex_branch_taken = ($signed(ex_r.op1) >= $signed(ex_r.op2));// BGE
+				3'b110: ex_branch_taken = (ex_r.op1 < ex_r.op2);                  // BLTU
+				3'b111: ex_branch_taken = (ex_r.op1 >= ex_r.op2);                 // BGEU
+				default: ex_branch_taken = 1'b0;
+			endcase
+		end
+		if (ex_r.is_jal || ex_r.is_jalr) ex_branch_taken = 1'b1;
+	end
+
+	assign ex_next_pc = ex_r.is_jalr ? ((ex_r.op1 + ex_r.imm) & ~64'd1) : (ex_r.pc + ex_r.imm);
+	assign ex_flush_front = ex_r.valid && ex_branch_taken;
+	assign ex_redirect_pc = ex_next_pc;
+	assign ex_mem_addr = ex_r.op1 + ex_r.imm;
+
+	always_comb begin
+		mem_store_strobe = 8'd0;
+		unique case (ex_r.mem_size)
+			MSIZE1: mem_store_strobe = 8'b0000_0001 << ex_mem_addr[2:0];
+			MSIZE2: mem_store_strobe = 8'b0000_0011 << ex_mem_addr[2:0];
+			MSIZE4: mem_store_strobe = 8'b0000_1111 << ex_mem_addr[2:0];
+			MSIZE8: mem_store_strobe = 8'b1111_1111;
+			default: mem_store_strobe = 8'd0;
+		endcase
+	end
+	assign mem_store_data_shifted = ex_r.rs2_store << ({ex_mem_addr[2:0], 3'b000});
+
+	assign mem_byte_shift = {3'd0, mem_r.mem_addr[2:0]};
+	assign mem_aligned_data = dresp.data >> (mem_byte_shift * 6'd8);
+
+	always_comb begin
+		mem_load_data = 64'd0;
+		unique case (mem_r.mem_size)
+			MSIZE1: mem_load_data = mem_r.mem_unsigned ? {56'd0, mem_aligned_data[7:0]} : {{56{mem_aligned_data[7]}}, mem_aligned_data[7:0]};
+			MSIZE2: mem_load_data = mem_r.mem_unsigned ? {48'd0, mem_aligned_data[15:0]} : {{48{mem_aligned_data[15]}}, mem_aligned_data[15:0]};
+			MSIZE4: mem_load_data = mem_r.mem_unsigned ? {32'd0, mem_aligned_data[31:0]} : {{32{mem_aligned_data[31]}}, mem_aligned_data[31:0]};
+			MSIZE8: mem_load_data = mem_aligned_data;
+			default: mem_load_data = mem_aligned_data;
+		endcase
+	end
+
+	assign mem_stage_result = mem_r.is_load ? mem_load_data : mem_r.result;
 
 	always_ff @(posedge clk) begin
 		if (reset) begin
@@ -329,7 +558,7 @@ module core import common::*;(
 			op1_eff = ex_r.is_word ? {32'd0, ex_r.op1[31:0]} : ex_r.op1;
 			op2_eff = ex_r.is_word ? {32'd0, ex_r.op2[31:0]} : ex_r.op2;
 
-			if (!halted && !trap_commit && !stall_front && ex_r.valid && ex_is_mdu && mdu_out_valid) begin
+			if (!halted && !trap_commit && !stall_pipe && ex_r.valid && ex_is_mdu && mdu_out_valid) begin
 				mdu_out_valid <= 1'b0;
 			end
 
@@ -524,6 +753,8 @@ module core import common::*;(
 			fetch_pc <= PCINIT;
 			fetch_pending <= 1'b0;
 			fetch_req_pc <= 64'd0;
+			fetch_redirect_pending <= 1'b0;
+			fetch_redirect_pc <= 64'd0;
 			fetch_buf_valid <= 1'b0;
 			fetch_buf_pc <= 64'd0;
 			fetch_buf_instr <= 32'd0;
@@ -554,6 +785,7 @@ module core import common::*;(
 			if (trap_commit) begin
 				halted <= 1'b1;
 				fetch_pending <= 1'b0;
+				fetch_redirect_pending <= 1'b0;
 				fetch_buf_valid <= 1'b0;
 				trap_valid_latched <= 1'b1;
 				trap_code_latched <= gpr[10][2:0];
@@ -563,29 +795,62 @@ module core import common::*;(
 			end
 
 			if (!halted && !trap_commit) begin
-				if (fetch_resp_fire) begin
-					fetch_buf_valid <= 1'b1;
-					fetch_buf_pc <= fetch_req_addr;
-					fetch_buf_instr <= iresp.data;
-					fetch_pc <= fetch_req_addr + 64'd4;
-					fetch_pending <= 1'b0;
-				end else if (fetch_issue_fire) begin
+				if (ex_flush_front) begin
+					fetch_buf_valid <= 1'b0;
+					if (fetch_pending && !fetch_resp_fire) begin
+						fetch_redirect_pending <= 1'b1;
+						fetch_redirect_pc <= ex_redirect_pc;
+					end else begin
+						fetch_pending <= 1'b0;
+						fetch_req_pc <= 64'd0;
+						fetch_redirect_pending <= 1'b0;
+						fetch_pc <= ex_redirect_pc;
+					end
+				end else if (fetch_resp_fire) begin
+					if (fetch_redirect_pending) begin
+						fetch_pending <= 1'b0;
+						fetch_req_pc <= 64'd0;
+						fetch_redirect_pending <= 1'b0;
+						fetch_pc <= fetch_redirect_pc;
+					end else if (fetch_resp_to_id) begin
+						fetch_pending <= 1'b1;
+						fetch_req_pc <= fetch_req_pc + 64'd4;
+						fetch_pc <= fetch_req_pc + 64'd8;
+					end else begin
+						fetch_pending <= 1'b0;
+						fetch_pc <= fetch_req_pc + 64'd4;
+					end
+				end else if (fetch_req_new_fire) begin
 					fetch_pending <= 1'b1;
 					fetch_req_pc <= fetch_pc;
 				end
-				if (fetch_fire && !fetch_resp_fire) begin
-					fetch_buf_valid <= 1'b0;
+
+				if (!ex_flush_front) begin
+					if (fetch_resp_to_buf) begin
+						fetch_buf_valid <= 1'b1;
+						fetch_buf_pc <= fetch_req_pc;
+						fetch_buf_instr <= iresp.data;
+					end else if (fetch_pop_buf) begin
+						fetch_buf_valid <= 1'b0;
+					end
 				end
 
-				wb_r.valid <= mem_r.valid;
-				wb_r.trap  <= mem_r.trap;
-				wb_r.wen   <= mem_r.wen;
-				wb_r.rd    <= mem_r.rd;
-				wb_r.pc    <= mem_r.pc;
-				wb_r.instr <= mem_r.instr;
-				wb_r.result<= mem_r.result;
+				if (stall_mem_busy) begin
+					wb_r.valid <= 1'b0;
+				end else begin
+					wb_r.valid <= mem_r.valid;
+					wb_r.trap  <= mem_r.trap;
+					wb_r.wen   <= mem_r.wen;
+					wb_r.rd    <= mem_r.rd;
+					wb_r.pc    <= mem_r.pc;
+					wb_r.instr <= mem_r.instr;
+					wb_r.result<= mem_stage_result;
+				end
 
-				if (stall_front) begin
+				if (stall_mem_busy) begin
+					// Keep MEM stage stable while waiting for dresp.data_ok.
+					mem_r <= mem_r;
+				end else if (stall_ex_busy || raw_hazard_ex || raw_hazard_mem || fetch_redirect_pending) begin
 					mem_r <= '0;
 				end else begin
 					mem_r.valid <= ex_r.valid;
@@ -594,7 +859,14 @@ module core import common::*;(
 					mem_r.rd    <= ex_r.rd;
 					mem_r.pc    <= ex_r.pc;
 					mem_r.instr <= ex_r.instr;
-					mem_r.result<= ex_result;
+					mem_r.result<= ex_r.wb_pc4 ? (ex_r.pc + 64'd4) : ex_result;
+					mem_r.is_load <= ex_r.is_load;
+					mem_r.is_store <= ex_r.is_store;
+					mem_r.mem_size <= ex_r.mem_size;
+					mem_r.mem_unsigned <= ex_r.mem_unsigned;
+					mem_r.mem_addr <= ex_mem_addr;
+					mem_r.mem_wdata <= mem_store_data_shifted;
+					mem_r.mem_wstrb <= ex_r.is_store ? mem_store_strobe : 8'd0;
 
 					ex_r.valid   <= id_dec_valid;
 					ex_r.trap    <= id_dec_trap;
@@ -606,11 +878,30 @@ module core import common::*;(
 					ex_r.instr   <= id_r.instr;
 					ex_r.op1     <= id_dec_op1;
 					ex_r.op2     <= id_dec_op2;
+					ex_r.imm     <= id_dec_imm;
+					ex_r.rs2_store <= id_dec_rs2_store;
+					ex_r.is_load <= id_dec_is_load;
+					ex_r.is_store <= id_dec_is_store;
+					ex_r.mem_size <= id_dec_mem_size;
+					ex_r.mem_unsigned <= id_dec_mem_unsigned;
+					ex_r.is_branch <= id_dec_is_branch;
+					ex_r.br_funct3 <= id_dec_br_funct3;
+					ex_r.is_jal <= id_dec_is_jal;
+					ex_r.is_jalr <= id_dec_is_jalr;
+					ex_r.wb_pc4 <= id_dec_wb_pc4;
 
-					if (fetch_fire) begin
+					if (ex_flush_front) begin
+						id_r.valid <= 1'b0;
+						id_r.pc    <= 64'd0;
+						id_r.instr <= 32'd0;
+					end else if (fetch_pop_buf) begin
 						id_r.valid <= 1'b1;
 						id_r.pc    <= fetch_buf_pc;
 						id_r.instr <= fetch_buf_instr;
+					end else if (fetch_resp_to_id) begin
+						id_r.valid <= 1'b1;
+						id_r.pc    <= fetch_req_pc;
+						id_r.instr <= iresp.data;
 					end else begin
 						id_r.valid <= 1'b0;
 						id_r.pc    <= 64'd0;
