@@ -1,139 +1,262 @@
-﻿# Lab1 实现说明（更新版）
+﻿# Lab2 实现说明
 
-## 1. 流水线组织
+## 1. 总览
 
-实现为单发射 5 级顺序流水：
+Lab2 的目标是为五级流水 CPU 接入真实数据访存，并支持以下指令：
 
-- IF：取指请求、响应缓冲与直通
-- ID：译码、读寄存器、前递选择
-- EX：ALU/MDU 运算、分支跳转判定
-- MEM：真实数据访存（Load/Store）
-- WB：写回寄存器并提交 Difftest
+- Load：`lb, lh, lw, ld, lbu, lhu, lwu`
+- Store：`sb, sh, sw, sd`
+- 立即数上半部：`lui`
 
-核心流水寄存器：
+核心实现文件是 `vsrc/src/core.sv`，其中：
 
-- `id_r`: `valid/pc/instr`
-- `ex_r`: `valid/trap/wen/is_word/alu_cmd/rd/pc/instr/op1/op2/imm/...`
-- `mem_r`: `valid/trap/wen/rd/pc/instr/result/is_load/is_store/mem_*`
-- `wb_r`: `valid/trap/wen/rd/pc/instr/result`
+- 指令译码：约 `288-339` 行
+- 数据总线请求：`229-233` 行
+- Store 掩码与数据对齐：`482-491` 行
+- Load 数据对齐与扩展：`494-503` 行
+- MEM->WB 结果选择：`507` 行
 
-更新顺序为 `wb <= mem <= ex <= id`。`x0` 每拍强制保持为 0。
+  ![1774257413128](image/report/1774257413128.png)
 
-## 2. 指令支持
+## 2. 统一数据通路（所有访存指令共用）
 
-### 2.1 Lab1 必做
+### 2.1 译码到执行寄存器
 
-- I 型算术逻辑：`addi/xori/ori/andi`
-- R 型算术逻辑：`add/sub/and/or/xor`
-- W 型算术：`addiw/addw/subw`
+LOAD/STORE 在 ID 阶段产生 `id_dec_is_load`/`id_dec_is_store`、`id_dec_mem_size`、`id_dec_mem_unsigned`，并在 EX->MEM 流水传递：
 
-### 2.2 选做（已完成）
+```systemverilog
+ex_r.mem_size <= id_dec_mem_size;
+ex_r.mem_unsigned <= id_dec_mem_unsigned;
+```
 
-- M 扩展：`mul/div/divu/rem/remu`
-- M 扩展 W 变体：`mulw/divw/divuw/remw/remuw`
+（`core.sv:885-886`）
 
-### 2.3 为后续扩展已接入的基础能力
+### 2.2 总线请求发起（MEM 阶段）
 
-在保持 Lab1 正确性的前提下，流水线还实现了以下常见路径：
+```systemverilog
+assign dreq.valid  = mem_r.valid && (mem_r.is_load || mem_r.is_store) && !trap_commit;
+assign dreq.addr   = mem_r.mem_addr;
+assign dreq.size   = msize_t'(mem_r.mem_size);
+assign dreq.strobe = mem_r.mem_wstrb;
+assign dreq.data   = mem_r.mem_wdata;
+```
 
-- 移位与比较：`sll/srl/sra/slt/sltu` 及 W 变体
-- 控制流：`jal/jalr/branch`
-- 访存：`load/store`（含字节宽度与符号扩展）
-
-## 3. 取指与前端
-
-前端采用“1 条 in-flight + 1 条缓冲”的取指结构：
-
-- 请求发出后保持，直到 `iresp.data_ok`
-- 响应优先直通 ID，不能直通时写入 `fetch_buf`
-- 分支/跳转命中后进行前端冲刷和 PC 重定向
-
-同时修复了仲裁器在事务边界引入的固定空泡，使连续取指可接近 1 IPC。
-
-## 4. 数据冒险与阻塞/前递
-
-### 4.1 前递
-
-Decode 阶段读寄存器后进行组合覆盖，优先级：
-
-- `EX > MEM > WB > GPR`
-
-其中 EX 仅在结果可用时允许前递：
-
-- `ex_forwardable = ex_r.valid && ex_r.wen && (ex_r.rd != 0) && ex_result_ready`
-
-### 4.2 阻塞
-
-采用“前递优先 + 必要阻塞”的策略：
-
-- `stall_ex_busy`：EX 中 MDU 多周期结果未就绪
-- `stall_mem_busy`：MEM 中 Load/Store 等待 `dresp.data_ok`
-- `raw_hazard_ex/raw_hazard_mem`：对未就绪源值的 RAW 冒险
-- 取指前端还受分支重定向和访存阶段占用约束
-
-该策略在保证正确性的同时尽量减少无效气泡。
-
-## 5. MEM 级真实访存
-
-`dreq` 已接入真实请求，不再是空连线：
-
-- `dreq.valid/addr/size/strobe/data` 由 `mem_r` 驱动
-- Load 在响应到达后按 `size + signed/unsigned` 做提取扩展
-- Store 按地址低位计算字节使能与写数据移位
-
-因此流水线中的 MEM 级已承担真实访存语义。
-
-## 6. MDU 多周期状态机
-
-### 6.1 乘法
-
-`mul/mulw` 使用迭代移位加法状态机，不使用 `*` 直接组合实现。
-
-### 6.2 除法/取余
-
-`div/divu/rem/remu`（含 W）使用迭代恢复除法状态机，不使用 `/` 直接组合实现。
-
-### 6.3 边界与优化
-
-- 除零与溢出等边界条件按 ISA 规则处理
-- `0/1` 快速路径、`dividend<divisor` 快速路径、2 的幂除数快速路径
-- 乘法保留提前结束逻辑
-
-## 7. Difftest 与提交时序
-
-- 指令提交在 WB 阶段进行（`DifftestInstrCommit`）
-- `wdest` 使用 `{3'd0, wb_r.rd}` 扩展到 8 位
-- `gpr_diff` 反映“当拍提交后”的寄存器状态，避免对拍错拍
-
-## 8. 测试与性能
-
-在 WSL 环境执行：
-
-- `make test-lab1`：`HIT GOOD TRAP`
-- `make test-lab1-extra`：`HIT GOOD TRAP`
-
-实测结果（`-j12`）：
-
-![1773071841884](image/report/1773071841884.png)
-
-![1773071863702](image/report/1773071863702.png)
-
-- `test-lab1`：`instrCnt=16386, cycleCnt=16390, IPC=0.999756`
-- `test-lab1-extra`：`instrCnt=32776, cycleCnt=213907, IPC=0.153225`
+（`core.sv:229-233`）
 
 说明：
 
-- `test-lab1` 以基础单周期 ALU 为主，IPC 接近 1，符合五级单发射预期。
-- `test-lab1-extra` 含大量多周期 M 指令，EX 占用时间长，IPC 明显下降属于正常现象。
+- Load：`strobe` 被设置为 0（见 `mem_r.mem_wstrb <= ex_r.is_store ? mem_store_strobe : 8'd0;`，`core.sv:869`）
+- Store：`strobe` 为字节写掩码，`data` 为按地址偏移后的写数据。
 
-## 9. AI 使用说明
+### 2.3 Store 对齐逻辑
 
-大模型用于：
+```systemverilog
+MSIZE1: mem_store_strobe = 8'b0000_0001 << ex_mem_addr[2:0];
+MSIZE2: mem_store_strobe = 8'b0000_0011 << ex_mem_addr[2:0];
+MSIZE4: mem_store_strobe = 8'b0000_1111 << ex_mem_addr[2:0];
+MSIZE8: mem_store_strobe = 8'b1111_1111;
+assign mem_store_data_shifted = ex_r.rs2_store << ({ex_mem_addr[2:0], 3'b000});
+```
 
-- 帮助整理实现方案与报告结构
-- 检查位宽、连线和边界条件清单
-- 生成回归验证步骤
+（`core.sv:484-487, 491`）
 
-RTL 设计、时序策略、调试定位和最终结论由本人完成。
+### 2.4 Load 回收逻辑
 
-*具体使用的AI工具为codex,模型版本 5.3，由于其出色的命令执行能力，在环境搭建中也发挥了不错的作用
+```systemverilog
+assign mem_aligned_data = dresp.data >> (mem_byte_shift * 6'd8);
+MSIZE1: mem_load_data = mem_r.mem_unsigned ? {56'd0, mem_aligned_data[7:0]}  : {{56{mem_aligned_data[7]}},  mem_aligned_data[7:0]};
+MSIZE2: mem_load_data = mem_r.mem_unsigned ? {48'd0, mem_aligned_data[15:0]} : {{48{mem_aligned_data[15]}}, mem_aligned_data[15:0]};
+MSIZE4: mem_load_data = mem_r.mem_unsigned ? {32'd0, mem_aligned_data[31:0]} : {{32{mem_aligned_data[31]}}, mem_aligned_data[31:0]};
+MSIZE8: mem_load_data = mem_aligned_data;
+assign mem_stage_result = mem_r.is_load ? mem_load_data : mem_r.result;
+```
+
+（`core.sv:494, 499-503, 507`）
+
+## 3. 每条指令如何实现
+
+## 3.1 `lui`
+
+译码位置：`core.sv:288-292`
+
+关键行为：
+
+- `id_opcode == 7'b0110111` 命中 LUI
+- `id_dec_wen = 1'b1`
+- `id_dec_op1 = 64'd0`
+- `id_dec_op2 = id_imm_u`
+- ALU 默认是加法，因此结果为 `0 + imm_u`
+
+效果：把 U 型立即数（低 12 位补 0）写入 `rd`。
+
+## 3.2 `lb`
+
+译码位置：`core.sv:322`
+
+关键控制：
+
+- `id_dec_is_load = 1`
+- `id_dec_mem_size = MSIZE1`
+- `id_dec_mem_unsigned = 0`
+
+数据回收：`MSIZE1` 且有符号扩展（`core.sv:499` 右支）。
+
+效果：读取 1 字节并符号扩展到 64 位。
+
+## 3.3 `lbu`
+
+译码位置：`core.sv:326`
+
+关键控制：
+
+- `id_dec_mem_size = MSIZE1`
+- `id_dec_mem_unsigned = 1`
+
+数据回收：`MSIZE1` 且零扩展（`core.sv:499` 左支）。
+
+效果：读取 1 字节并零扩展到 64 位。
+
+## 3.4 `lh`
+
+译码位置：`core.sv:323`
+
+关键控制：
+
+- `id_dec_mem_size = MSIZE2`
+- `id_dec_mem_unsigned = 0`
+
+数据回收：`MSIZE2` 且有符号扩展（`core.sv:500` 右支）。
+
+效果：读取 2 字节并符号扩展到 64 位。
+
+## 3.5 `lhu`
+
+译码位置：`core.sv:327`
+
+关键控制：
+
+- `id_dec_mem_size = MSIZE2`
+- `id_dec_mem_unsigned = 1`
+
+数据回收：`MSIZE2` 且零扩展（`core.sv:500` 左支）。
+
+效果：读取 2 字节并零扩展到 64 位。
+
+## 3.6 `lw`
+
+译码位置：`core.sv:324`
+
+关键控制：
+
+- `id_dec_mem_size = MSIZE4`
+- `id_dec_mem_unsigned = 0`
+
+数据回收：`MSIZE4` 且有符号扩展（`core.sv:501` 右支）。
+
+效果：读取 4 字节并符号扩展到 64 位。
+
+## 3.7 `lwu`
+
+译码位置：`core.sv:328`
+
+关键控制：
+
+- `id_dec_mem_size = MSIZE4`
+- `id_dec_mem_unsigned = 1`
+
+数据回收：`MSIZE4` 且零扩展（`core.sv:501` 左支）。
+
+效果：读取 4 字节并零扩展到 64 位。
+
+## 3.8 `ld`
+
+译码位置：`core.sv:325`
+
+关键控制：
+
+- `id_dec_mem_size = MSIZE8`
+- `id_dec_mem_unsigned = 0`（对 64 位读来说无影响）
+
+数据回收：`MSIZE8: mem_load_data = mem_aligned_data`（`core.sv:502`）。
+
+效果：读取完整 8 字节到 64 位寄存器。
+
+## 3.9 `sb`
+
+译码位置：`core.sv:336`
+
+关键控制：
+
+- `id_dec_is_store = 1`
+- `id_dec_mem_size = MSIZE1`
+
+写掩码：`0000_0001 << addr[2:0]`（`core.sv:484`）
+
+写数据：`rs2_store << (addr[2:0]*8)`（`core.sv:491`）
+
+效果：仅目标 1 字节被写入。
+
+## 3.10 `sh`
+
+译码位置：`core.sv:337`
+
+关键控制：
+
+- `id_dec_mem_size = MSIZE2`
+
+写掩码：`0000_0011 << addr[2:0]`（`core.sv:485`）
+
+写数据：同样按地址低位移位（`core.sv:491`）。
+
+效果：写入 2 字节。
+
+## 3.11 `sw`
+
+译码位置：`core.sv:338`
+
+关键控制：
+
+- `id_dec_mem_size = MSIZE4`
+
+写掩码：`0000_1111 << addr[2:0]`（`core.sv:486`）
+
+写数据：按偏移移位（`core.sv:491`）。
+
+效果：写入 4 字节。
+
+## 3.12 `sd`
+
+译码位置：`core.sv:339`
+
+关键控制：
+
+- `id_dec_mem_size = MSIZE8`
+
+写掩码：全 1（`1111_1111`，`core.sv:487`）。
+
+效果：写入完整 8 字节。
+
+## 4. 指令执行正确性的关键保障
+
+1. 访存等待阻塞
+
+- `stall_mem_busy` 在 `dresp.data_ok` 到达前保持 MEM，不让流水越过未完成访存（`core.sv:207, 850`）。
+
+2. 前端并发抑制
+
+- `stall_if_mem` 时拉低 `ireq.valid`，降低 I/D 总线竞争（`core.sv:208, 226`）。
+
+3. Load/非Load 统一写回入口
+
+- `mem_stage_result` 选择器统一了写回行为，避免路径分叉错误（`core.sv:507`）。
+
+## 5. 小结
+
+每条 Lab2 指令都不是“单点硬编码”，而是通过统一的访存框架实现：
+
+- 译码决定语义（size/unsigned/load/store）；
+- EX 决定地址与写 lane；
+- MEM 发请求并处理响应；
+- WB 统一提交结果。
+
+因此该实现既满足当前指令集需求，也便于后续继续扩展更多访存类指令。
