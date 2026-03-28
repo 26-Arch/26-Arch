@@ -15,9 +15,64 @@ module core import common::*;(
 );
 	localparam logic [31:0] TRAP_INST = 32'h0005006b;
 
+	function automatic msize_t mem_size_from_funct3(input logic [2:0] funct3);
+		begin
+			case (funct3)
+				3'b000, 3'b100: mem_size_from_funct3 = MSIZE1;
+				3'b001, 3'b101: mem_size_from_funct3 = MSIZE2;
+				3'b010, 3'b110: mem_size_from_funct3 = MSIZE4;
+				default:        mem_size_from_funct3 = MSIZE8;
+			endcase
+		end
+	endfunction
+
+	function automatic strobe_t store_strobe_from_funct3(
+		input logic [2:0] funct3,
+		input logic [2:0] addr_low
+	);
+		begin
+			case (funct3)
+				3'b000:  store_strobe_from_funct3 = 8'b0000_0001 << addr_low;
+				3'b001:  store_strobe_from_funct3 = 8'b0000_0011 << addr_low;
+				3'b010:  store_strobe_from_funct3 = 8'b0000_1111 << addr_low;
+				default: store_strobe_from_funct3 = 8'b1111_1111;
+			endcase
+		end
+	endfunction
+
+	function automatic logic [63:0] align_store_data(
+		input logic [63:0] store_data,
+		input logic [2:0]  addr_low
+	);
+		begin
+			align_store_data = store_data << {addr_low, 3'b0};
+		end
+	endfunction
+
+	function automatic logic [63:0] extend_load_data(
+		input logic [63:0] raw_data,
+		input logic [2:0]  addr_low,
+		input logic [2:0]  funct3
+	);
+		logic [63:0] shifted_data;
+		begin
+			shifted_data = raw_data >> {addr_low, 3'b0};
+			case (funct3)
+				3'b000:  extend_load_data = {{56{shifted_data[7]}}, shifted_data[7:0]};
+				3'b001:  extend_load_data = {{48{shifted_data[15]}}, shifted_data[15:0]};
+				3'b010:  extend_load_data = {{32{shifted_data[31]}}, shifted_data[31:0]};
+				3'b011:  extend_load_data = shifted_data;
+				3'b100:  extend_load_data = {56'b0, shifted_data[7:0]};
+				3'b101:  extend_load_data = {48'b0, shifted_data[15:0]};
+				3'b110:  extend_load_data = {32'b0, shifted_data[31:0]};
+				default: extend_load_data = shifted_data;
+			endcase
+		end
+	endfunction
+
 	// ========== 1. Register File ==========
 	logic [63:0] wb_data;
-	logic        reg_write_wb;
+	logic        reg_write_wb, reg_write_wb_fire, wb_fired;
 	logic [4:0]  rd_wb;
 	logic [63:0] rs1_data_id_r, rs2_data_id_r;
 	logic [31:0][63:0] rf_dbg;
@@ -27,7 +82,7 @@ module core import common::*;(
 
 	// ========== 2. PC & IF ==========
 	logic [63:0] pc, next_pc;
-	logic        stall, fetch_wait;
+	logic        stall, fetch_wait, mem_wait, mem_access_mem;
 
 	assign next_pc = pc + 64'd4;
 
@@ -38,8 +93,8 @@ module core import common::*;(
 			pc <= next_pc;
 	end
 
-	// Keep request stable until data_ok, per Lab1 ibus requirement.
-	assign ireq.valid = ~load_use_hazard;
+	// Stop issuing ibus requests while a MEM access is occupying the shared bus.
+	assign ireq.valid = ~load_use_hazard && !mem_access_mem;
 	assign ireq.addr  = pc;
 
 	// ========== 3. IF_ID Reg ==========
@@ -91,7 +146,7 @@ module core import common::*;(
 	core_regfile regfile(
 		.clk      (clk),
 		.reset    (reset),
-		.wen      (reg_write_wb),
+		.wen      (reg_write_wb_fire),
 		.waddr    (rd_wb),
 		.wdata    (wb_data),
 		.raddr1   (rs1_id),
@@ -132,7 +187,7 @@ module core import common::*;(
 			mem_write_ex  <= 1'b0;
 			reg_write_ex  <= 1'b0;
 			wb_sel_ex     <= 1'b0;
-		end else if (load_use_hazard) begin
+		end else if (load_use_hazard || (mem_access_mem && !mem_wait)) begin
 			pc_ex         <= 64'b0;
 			instr_ex      <= 32'b0;
 			inst_valid_ex <= 1'b0;
@@ -183,7 +238,7 @@ module core import common::*;(
 	);
 
 	assign fetch_wait = ireq.valid && !iresp.data_ok;
-	assign stall = load_use_hazard || fetch_wait;
+	assign stall = load_use_hazard || fetch_wait || mem_access_mem;
 
 	// ========== 6. EX ALU (Phase 3: Forwarding) ==========
 	logic [63:0] alu_opA, alu_opB, rs2_forwarded;
@@ -234,13 +289,13 @@ module core import common::*;(
 			mem_write_mem  <= 1'b0;
 			reg_write_mem  <= 1'b0;
 			wb_sel_mem     <= 1'b0;
-		end else if (!fetch_wait) begin
-			// Phase 3: advance even when stall (let Load flow, avoid deadlock)
+		end else if (!fetch_wait && !mem_wait) begin
+			// Allow load-use bubbles to flow, but hold MEM while dbus is still busy.
 			pc_mem         <= pc_ex;
 			instr_mem      <= instr_ex;
 			inst_valid_mem <= inst_valid_ex;
 			alu_result_mem <= alu_result_ex;
-			rs2_data_mem   <= rs2_data_ex;
+			rs2_data_mem   <= rs2_forwarded;
 			rd_mem         <= rd_ex;
 			funct3_mem     <= funct3_ex;
 			mem_read_mem   <= mem_read_ex;
@@ -251,11 +306,22 @@ module core import common::*;(
 	end
 
 	// ========== 8. MEM ==========
-	assign dreq.valid  = 1'b0;
-	assign dreq.addr   = 64'b0;
-	assign dreq.size   = MSIZE8;
-	assign dreq.strobe = 8'b0;
-	assign dreq.data   = 64'b0;
+	logic [63:0] load_data_mem, store_data_aligned_mem;
+	strobe_t     store_strobe_mem;
+	msize_t      mem_size_mem;
+
+	assign mem_access_mem = inst_valid_mem && (mem_read_mem || mem_write_mem);
+	assign mem_wait = mem_access_mem && !dresp.data_ok;
+	assign mem_size_mem = mem_size_from_funct3(funct3_mem);
+	assign store_strobe_mem = store_strobe_from_funct3(funct3_mem, alu_result_mem[2:0]);
+	assign store_data_aligned_mem = align_store_data(rs2_data_mem, alu_result_mem[2:0]);
+	assign load_data_mem = extend_load_data(dresp.data, alu_result_mem[2:0], funct3_mem);
+
+	assign dreq.valid  = mem_access_mem;
+	assign dreq.addr   = alu_result_mem;
+	assign dreq.size   = mem_size_mem;
+	assign dreq.strobe = mem_write_mem ? store_strobe_mem : 8'b0;
+	assign dreq.data   = store_data_aligned_mem;
 
 	// ========== 9. MEM_WB Reg ==========
 	logic [63:0] pc_wb, alu_result_wb, mem_data_wb;
@@ -276,13 +342,13 @@ module core import common::*;(
 			mem_read_wb   <= 1'b0;
 			reg_write_wb  <= 1'b0;
 			wb_sel_wb     <= 1'b0;
-		end else if (!fetch_wait) begin
-			// Phase 3: advance even when stall (let Load flow, avoid deadlock)
+		end else if (!fetch_wait && !mem_wait) begin
+			// Allow load-use bubbles to flow, but do not sample dbus before data_ok.
 			pc_wb         <= pc_mem;
 			instr_wb      <= instr_mem;
 			inst_valid_wb <= inst_valid_mem;
 			alu_result_wb <= alu_result_mem;
-			mem_data_wb   <= dresp.data;
+			mem_data_wb   <= load_data_mem;
 			rd_wb         <= rd_mem;
 			funct3_wb     <= funct3_mem;
 			mem_read_wb   <= mem_read_mem;
@@ -294,9 +360,20 @@ module core import common::*;(
 	// ========== 10. WB ==========
 	assign wb_data = wb_sel_wb ? mem_data_wb : alu_result_wb;
 	assign is_trap_wb = inst_valid_wb && (instr_wb == TRAP_INST);
-	assign commit_valid_wb = inst_valid_wb && !fetch_wait;
-	assign trap_valid_wb = is_trap_wb && !fetch_wait;
+	assign commit_valid_wb = inst_valid_wb && !wb_fired;
+	assign reg_write_wb_fire = reg_write_wb && commit_valid_wb;
+	assign trap_valid_wb = is_trap_wb && commit_valid_wb;
 	assign trap_code_wb = rf_dbg[10][7:0];
+
+	always_ff @(posedge clk) begin
+		if (reset) begin
+			wb_fired <= 1'b0;
+		end else if (!fetch_wait && !mem_wait) begin
+			wb_fired <= 1'b0;
+		end else if (commit_valid_wb) begin
+			wb_fired <= 1'b1;
+		end
+	end
 
 	always_ff @(posedge clk) begin
 		if (reset) begin
@@ -315,7 +392,7 @@ module core import common::*;(
 		for (int i = 0; i < 32; i++) begin
 			if (i == 0)
 				gpr_dt[i] = 64'b0;
-			else if (reg_write_wb && rd_wb == i[4:0])
+			else if (reg_write_wb_fire && rd_wb == i[4:0])
 				gpr_dt[i] = wb_data;
 			else
 				gpr_dt[i] = rf_dbg[i];
@@ -333,7 +410,7 @@ module core import common::*;(
 		.skip               (1'b0),
 		.isRVC              (1'b0),
 		.scFailed           (1'b0),
-		.wen                (reg_write_wb),
+		.wen                (reg_write_wb_fire),
 		.wdest              ({3'b0, rd_wb}),
 		.wdata              (wb_data)
 	);
