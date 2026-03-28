@@ -1,0 +1,19 @@
+{
+  "expectations": [
+    {
+      "text": "判断为运行时失败",
+      "passed": true,
+      "evidence": "明确区分构建成功、运行失败。"
+    },
+    {
+      "text": "包含关键失配细节",
+      "passed": true,
+      "evidence": "保留了 a7 mismatch、pc、LUI 指令与 ABORT 信息。"
+    },
+    {
+      "text": "压缩日志并给出下一步",
+      "passed": true,
+      "evidence": "没有复述冗长构建日志，给出查看 core.sv/LUI 写回路径的建议。"
+    }
+  ]
+}

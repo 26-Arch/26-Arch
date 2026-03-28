@@ -1,0 +1,19 @@
+{
+  "expectations": [
+    {
+      "text": "判断为运行时失败",
+      "passed": true,
+      "evidence": "明确判断为运行失败。"
+    },
+    {
+      "text": "包含关键失配细节",
+      "passed": true,
+      "evidence": "保留了 a7 mismatch、pc、LUI 指令等关键信息。"
+    },
+    {
+      "text": "压缩日志并给出下一步",
+      "passed": true,
+      "evidence": "压缩效果也较好，并给出优先查看核心 RTL 的建议。"
+    }
+  ]
+}

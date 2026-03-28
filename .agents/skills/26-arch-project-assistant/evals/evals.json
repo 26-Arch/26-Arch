@@ -1,0 +1,65 @@
+{
+  "skill_name": "26-arch-project-assistant",
+  "evals": [
+    {
+      "id": 0,
+      "prompt": "请先帮我快速理解这个 26-Arch 仓库：它整体要做什么、Lab1/Lab2 大致分别在推进什么能力、我后续如果要读当前 CPU 实现，应该先看哪些文件，为什么。",
+      "expected_output": "给出仓库目标、Lab1/Lab2 的高层边界，并基于当前项目结构推荐合理的阅读入口文件与顺序。",
+      "files": [],
+      "assertions": [
+        {
+          "name": "mentions-key-project-areas",
+          "description": "输出应提到至少两个关键项目区域，如 vsrc、ready-to-run、difftest、Makefile。"
+        },
+        {
+          "name": "recommends-core-entry-files",
+          "description": "输出应推荐至少两个合理入口文件，如 core.sv、common.sv、SimTop.sv、Makefile。"
+        },
+        {
+          "name": "includes-lab-boundary-summary",
+          "description": "输出应简要区分 Lab1 与 Lab2 的能力推进方向。"
+        }
+      ]
+    },
+    {
+      "id": 1,
+      "prompt": "请结合当前仓库代码，判断现在这版实现到底支持到什么程度：Lab1 基础、Lab1-extra、Lab2 各自是什么状态？请说明依据来自代码结构、测试边界还是实际测试结果。",
+      "expected_output": "区分仓库具备的测试能力与当前实现实际支持范围，明确说明哪些结论来自代码检查、测试边界或实际运行结果。",
+      "files": [],
+      "assertions": [
+        {
+          "name": "states-lab1-base-pass",
+          "description": "输出应明确指出 Lab1 基础测试通过。"
+        },
+        {
+          "name": "states-extra-and-lab2-not-supported",
+          "description": "输出应明确指出 Lab1-extra 和 Lab2 当前未通过或未支持。"
+        },
+        {
+          "name": "separates-evidence-types",
+          "description": "输出应区分结论来自代码结构、测试边界或实际测试结果，而不是混为一谈。"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "我刚跑完 make test-lab2，终端输出很长。请不要复述整段日志，而是只提取最关键的信息：结果是构建失败还是运行失败、最重要的失败位置、是哪类问题最可疑、下一步最值得先看哪个文件。",
+      "expected_output": "压缩长日志，只保留结果、关键失败点、可能问题类别和下一步建议，不重复大段构建噪声。",
+      "files": [],
+      "assertions": [
+        {
+          "name": "identifies-runtime-not-build-failure",
+          "description": "输出应判断这是运行时失败而不是构建失败。"
+        },
+        {
+          "name": "includes-critical-mismatch-detail",
+          "description": "输出应提到关键失败位置，例如 failing pc 或寄存器失配信息。"
+        },
+        {
+          "name": "compresses-log-and-gives-next-step",
+          "description": "输出应避免复述长日志，并给出一个明确的下一步检查方向。"
+        }
+      ]
+    }
+  ]
+}

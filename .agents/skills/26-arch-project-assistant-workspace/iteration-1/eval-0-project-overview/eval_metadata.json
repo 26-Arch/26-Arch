@@ -1,0 +1,10 @@
+{
+  "eval_id": 0,
+  "eval_name": "project-overview",
+  "prompt": "请先帮我快速理解这个 26-Arch 仓库：它整体要做什么、Lab1/Lab2 大致分别在推进什么能力、我后续如果要读当前 CPU 实现，应该先看哪些文件，为什么。",
+  "assertions": [
+    "输出应提到至少两个关键项目区域，如 vsrc、ready-to-run、difftest、Makefile。",
+    "输出应推荐至少两个合理入口文件，如 core.sv、common.sv、SimTop.sv、Makefile。",
+    "输出应简要区分 Lab1 与 Lab2 的能力推进方向。"
+  ]
+}

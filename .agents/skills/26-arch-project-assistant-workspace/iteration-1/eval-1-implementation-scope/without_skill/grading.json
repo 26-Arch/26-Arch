@@ -1,0 +1,19 @@
+{
+  "expectations": [
+    {
+      "text": "明确指出 Lab1 基础通过",
+      "passed": true,
+      "evidence": "明确写出 Lab1 基础通过。"
+    },
+    {
+      "text": "明确指出 extra 和 Lab2 未通过",
+      "passed": true,
+      "evidence": "明确写出 Lab1-extra 与 Lab2 未通过。"
+    },
+    {
+      "text": "区分证据来源",
+      "passed": true,
+      "evidence": "也区分了代码结构、测试边界与实际测试结果，但组织略弱于 with_skill。"
+    }
+  ]
+}

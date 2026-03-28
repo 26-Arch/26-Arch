@@ -1,0 +1,19 @@
+{
+  "expectations": [
+    {
+      "text": "提到关键项目区域",
+      "passed": true,
+      "evidence": "提到 verilate、difftest、ready-to-run、Makefile、vsrc 等关键区域。"
+    },
+    {
+      "text": "推荐核心入口文件",
+      "passed": true,
+      "evidence": "明确推荐 README、Makefile、common.sv、SimTop.sv、core.sv。"
+    },
+    {
+      "text": "区分 Lab1/Lab2 推进方向",
+      "passed": true,
+      "evidence": "对 Lab1 和 Lab2 的能力边界分别做了说明。"
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "expectations": [
+    {
+      "text": "明确指出 Lab1 基础通过",
+      "passed": true,
+      "evidence": "直接写出 Lab1 基础测试通过，并给出 GOOD TRAP 等证据。"
+    },
+    {
+      "text": "明确指出 extra 和 Lab2 未通过",
+      "passed": true,
+      "evidence": "明确写出 Lab1-extra 与 Lab2 未通过。"
+    },
+    {
+      "text": "区分证据来源",
+      "passed": true,
+      "evidence": "专门列出代码结构、测试边界、实际测试结果三类依据。"
+    }
+  ]
+}
