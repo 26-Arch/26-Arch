@@ -7,3 +7,4 @@ difftest/*
 .gdb_history
 .vscode/
 .DS_Store
+*.zip

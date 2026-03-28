@@ -207,6 +207,31 @@ typedef struct packed {
     u32 data;           // the data read from cache
 } ibus_resp_t;
 
+typedef enum logic [3:0] {
+    ALU_ADD  = 4'd0,
+    ALU_SUB  = 4'd1,
+    ALU_ADDW = 4'd2,
+    ALU_SUBW = 4'd3,
+    ALU_AND  = 4'd4,
+    ALU_OR   = 4'd5,
+    ALU_XOR  = 4'd6
+} alu_op_t;
+
+typedef struct packed {
+    u5       rd;
+    u5       rs1;
+    u5       rs2;
+    u3       funct3;
+    u7       funct7;
+    u64      imm;
+    alu_op_t alu_op;
+    logic    alu_src;
+    logic    mem_read;
+    logic    mem_write;
+    logic    reg_write;
+    logic    wb_sel;
+} decode_out_t;
+
 `define IREQ_TO_DREQ(ireq) \
     {ireq, MSIZE4, 8'b0, 64'b0}
 
