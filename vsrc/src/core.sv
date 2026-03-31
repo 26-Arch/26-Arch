@@ -171,6 +171,7 @@ module core import common::*;(
 	logic        ex_branch_taken;
 	logic        ex_flush_front;
 	logic [63:0] ex_redirect_pc;
+	logic        difftest_skip;
 	logic        fetch_redirect_pending;
 	logic [63:0] fetch_redirect_pc;
 	logic        mdu_busy;
@@ -218,7 +219,7 @@ module core import common::*;(
 	assign fetch_pop_buf = fetch_can_consume && fetch_buf_valid;
 	assign fetch_resp_fire = fetch_pending && iresp.data_ok;
 	assign fetch_resp_to_id = fetch_can_consume && (!fetch_buf_valid) && fetch_resp_fire;
-	assign fetch_resp_to_buf = fetch_resp_fire && !fetch_resp_to_id;
+	assign fetch_resp_to_buf = fetch_resp_fire && !fetch_resp_to_id && !fetch_redirect_pending;
 	assign fetch_fire = fetch_pop_buf || fetch_resp_to_id;
 	assign fetch_req_new_fire = fetch_can_consume && (!fetch_pending);
 	assign fetch_issue_fire = fetch_req_new_fire;
@@ -436,9 +437,9 @@ module core import common::*;(
 			ALU_XOR: ex_result = ex_r.op1 ^ ex_r.op2;
 			ALU_OR : ex_result = ex_r.op1 | ex_r.op2;
 			ALU_AND: ex_result = ex_r.op1 & ex_r.op2;
-			ALU_SLL: ex_result = ex_r.op1 << (ex_r.is_word ? {1'b0, ex_r.op2[4:0]} : ex_r.op2[5:0]);
-			ALU_SRL: ex_result = ex_r.op1 >> (ex_r.is_word ? {1'b0, ex_r.op2[4:0]} : ex_r.op2[5:0]);
-			ALU_SRA: ex_result = $signed(ex_r.op1) >>> (ex_r.is_word ? {1'b0, ex_r.op2[4:0]} : ex_r.op2[5:0]);
+			ALU_SLL: ex_result = ex_r.is_word ? {32'd0, (ex_r.op1[31:0] << ex_r.op2[4:0])} : (ex_r.op1 << ex_r.op2[5:0]);
+			ALU_SRL: ex_result = ex_r.is_word ? {32'd0, (ex_r.op1[31:0] >> ex_r.op2[4:0])} : (ex_r.op1 >> ex_r.op2[5:0]);
+			ALU_SRA: ex_result = ex_r.is_word ? {32'd0, $unsigned($signed(ex_r.op1[31:0]) >>> ex_r.op2[4:0])} : ($signed(ex_r.op1) >>> ex_r.op2[5:0]);
 			ALU_SLT: ex_result = ($signed(ex_r.op1) < $signed(ex_r.op2)) ? 64'd1 : 64'd0;
 			ALU_SLTU: ex_result = (ex_r.op1 < ex_r.op2) ? 64'd1 : 64'd0;
 			ALU_MUL,
@@ -505,6 +506,7 @@ module core import common::*;(
 	end
 
 	assign mem_stage_result = mem_r.is_load ? mem_load_data : mem_r.result;
+	assign difftest_skip = wb_r.valid && (wb_r.is_load || wb_r.is_store) && !wb_r.mem_addr[31];
 
 	always_ff @(posedge clk) begin
 		if (reset) begin
@@ -812,12 +814,9 @@ module core import common::*;(
 						fetch_req_pc <= 64'd0;
 						fetch_redirect_pending <= 1'b0;
 						fetch_pc <= fetch_redirect_pc;
-					end else if (fetch_resp_to_id) begin
-						fetch_pending <= 1'b1;
-						fetch_req_pc <= fetch_req_pc + 64'd4;
-						fetch_pc <= fetch_req_pc + 64'd8;
 					end else begin
 						fetch_pending <= 1'b0;
+						fetch_req_pc <= 64'd0;
 						fetch_pc <= fetch_req_pc + 64'd4;
 					end
 				end else if (fetch_req_new_fire) begin
@@ -845,12 +844,15 @@ module core import common::*;(
 					wb_r.pc    <= mem_r.pc;
 					wb_r.instr <= mem_r.instr;
 					wb_r.result<= mem_stage_result;
+					wb_r.is_load <= mem_r.is_load;
+					wb_r.is_store <= mem_r.is_store;
+					wb_r.mem_addr <= mem_r.mem_addr;
 				end
 
 				if (stall_mem_busy) begin
 					// Keep MEM stage stable while waiting for dresp.data_ok.
 					mem_r <= mem_r;
-				end else if (stall_ex_busy || raw_hazard_ex || raw_hazard_mem || fetch_redirect_pending) begin
+				end else if (stall_ex_busy || raw_hazard_mem || fetch_redirect_pending) begin
 					mem_r <= '0;
 				end else begin
 					mem_r.valid <= ex_r.valid;
@@ -868,44 +870,50 @@ module core import common::*;(
 					mem_r.mem_wdata <= mem_store_data_shifted;
 					mem_r.mem_wstrb <= ex_r.is_store ? mem_store_strobe : 8'd0;
 
-					ex_r.valid   <= id_dec_valid;
-					ex_r.trap    <= id_dec_trap;
-					ex_r.wen     <= id_dec_wen;
-					ex_r.is_word <= id_dec_is_word;
-					ex_r.alu_cmd <= id_dec_alu_cmd;
-					ex_r.rd      <= id_dec_rd;
-					ex_r.pc      <= id_r.pc;
-					ex_r.instr   <= id_r.instr;
-					ex_r.op1     <= id_dec_op1;
-					ex_r.op2     <= id_dec_op2;
-					ex_r.imm     <= id_dec_imm;
-					ex_r.rs2_store <= id_dec_rs2_store;
-					ex_r.is_load <= id_dec_is_load;
-					ex_r.is_store <= id_dec_is_store;
-					ex_r.mem_size <= id_dec_mem_size;
-					ex_r.mem_unsigned <= id_dec_mem_unsigned;
-					ex_r.is_branch <= id_dec_is_branch;
-					ex_r.br_funct3 <= id_dec_br_funct3;
-					ex_r.is_jal <= id_dec_is_jal;
-					ex_r.is_jalr <= id_dec_is_jalr;
-					ex_r.wb_pc4 <= id_dec_wb_pc4;
-
 					if (ex_flush_front) begin
+						ex_r <= '0;
 						id_r.valid <= 1'b0;
 						id_r.pc    <= 64'd0;
 						id_r.instr <= 32'd0;
-					end else if (fetch_pop_buf) begin
-						id_r.valid <= 1'b1;
-						id_r.pc    <= fetch_buf_pc;
-						id_r.instr <= fetch_buf_instr;
-					end else if (fetch_resp_to_id) begin
-						id_r.valid <= 1'b1;
-						id_r.pc    <= fetch_req_pc;
-						id_r.instr <= iresp.data;
+					end else if (raw_hazard_ex) begin
+						// Let EX advance (e.g., load -> MEM), while holding ID for one cycle.
+						ex_r <= '0;
 					end else begin
-						id_r.valid <= 1'b0;
-						id_r.pc    <= 64'd0;
-						id_r.instr <= 32'd0;
+						ex_r.valid   <= id_dec_valid;
+						ex_r.trap    <= id_dec_trap;
+						ex_r.wen     <= id_dec_wen;
+						ex_r.is_word <= id_dec_is_word;
+						ex_r.alu_cmd <= id_dec_alu_cmd;
+						ex_r.rd      <= id_dec_rd;
+						ex_r.pc      <= id_r.pc;
+						ex_r.instr   <= id_r.instr;
+						ex_r.op1     <= id_dec_op1;
+						ex_r.op2     <= id_dec_op2;
+						ex_r.imm     <= id_dec_imm;
+						ex_r.rs2_store <= id_dec_rs2_store;
+						ex_r.is_load <= id_dec_is_load;
+						ex_r.is_store <= id_dec_is_store;
+						ex_r.mem_size <= id_dec_mem_size;
+						ex_r.mem_unsigned <= id_dec_mem_unsigned;
+						ex_r.is_branch <= id_dec_is_branch;
+						ex_r.br_funct3 <= id_dec_br_funct3;
+						ex_r.is_jal <= id_dec_is_jal;
+						ex_r.is_jalr <= id_dec_is_jalr;
+						ex_r.wb_pc4 <= id_dec_wb_pc4;
+
+						if (fetch_pop_buf) begin
+							id_r.valid <= 1'b1;
+							id_r.pc    <= fetch_buf_pc;
+							id_r.instr <= fetch_buf_instr;
+						end else if (fetch_resp_to_id) begin
+							id_r.valid <= 1'b1;
+							id_r.pc    <= fetch_req_pc;
+							id_r.instr <= iresp.data;
+						end else begin
+							id_r.valid <= 1'b0;
+							id_r.pc    <= 64'd0;
+							id_r.instr <= 32'd0;
+						end
 					end
 				end
 			end else begin
@@ -935,7 +943,7 @@ module core import common::*;(
 		.valid              (wb_r.valid),
 		.pc                 (wb_r.pc),
 		.instr              (wb_r.instr),
-		.skip               (0),
+		.skip               (difftest_skip),
 		.isRVC              (0),
 		.scFailed           (0),
 		.wen                (wb_r.valid && wb_r.wen && (wb_r.rd != 0)),

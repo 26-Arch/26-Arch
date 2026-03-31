@@ -19,23 +19,44 @@ module CBusArbiter
     output cbus_req_t  oreq,
     input  cbus_resp_t oresp
 );
-    logic busy;
-    int index, select;
-    cbus_req_t saved_req, selected_req;
+    int select;
+    int lock_select;
+    logic any_valid;
+    cbus_req_t selected_req;
+    cbus_req_t lock_req;
+    logic lock_valid;
 
-    // Drive a latched request while busy so the downstream bus sees a stable
-    // transaction until completion.
-    assign oreq = busy ? saved_req : '0;
-    assign selected_req = ireqs[select];
+    assign selected_req = any_valid ? ireqs[select] : '0;
+    assign oreq = lock_valid ? lock_req : selected_req;
 
     // select a preferred request
     always_comb begin
         select = 0;
+        any_valid = 1'b0;
 
         for (int i = 0; i < NUM_INPUTS; i++) begin
-            if (ireqs[i].valid) begin
+            if (!any_valid && (ireqs[i].valid === 1'b1)) begin
                 select = i;
-                break;
+                any_valid = 1'b1;
+            end
+        end
+    end
+
+    always_ff @(posedge clk) begin
+        if (reset) begin
+            lock_valid  <= 1'b0;
+            lock_req    <= '0;
+            lock_select <= 0;
+        end else begin
+            if (lock_valid) begin
+                if (oresp.ready && oresp.last) begin
+                    lock_valid <= 1'b0;
+                end
+            end else if (any_valid && !(oresp.ready && oresp.last)) begin
+                // Hold one accepted request stable until RAM reports completion.
+                lock_valid  <= 1'b1;
+                lock_req    <= selected_req;
+                lock_select <= select;
             end
         end
     end
@@ -44,34 +65,12 @@ module CBusArbiter
     always_comb begin
         iresps = '0;
 
-        if (busy) begin
-            for (int i = 0; i < NUM_INPUTS; i++) begin
-                if (index == i)
-                    iresps[i] = oresp;
-            end
+        if (lock_valid) begin
+            iresps[lock_select] = oresp;
+        end else if (any_valid) begin
+            iresps[select] = oresp;
         end
     end
-
-    always_ff @(posedge clk)
-    if (~reset) begin
-        if (busy) begin
-            if (oresp.last) begin
-                // Finish current transaction first; pick next request in the
-                // following cycle so upstream has one cycle to update signals.
-                {busy, saved_req} <= '0;
-            end
-        end else begin
-            busy <= selected_req.valid;
-            if (selected_req.valid) begin
-                index <= select;
-                saved_req <= selected_req;
-            end
-        end
-    end else begin
-        {busy, index, saved_req} <= '0;
-    end
-
-    `UNUSED_OK({saved_req});
 endmodule
 
 
