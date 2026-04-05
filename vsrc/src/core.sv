@@ -9,6 +9,8 @@
 `include "src/core/core_decode.sv"
 `include "src/core/core_execute.sv"
 `include "src/core/core_mdu.sv"
+`include "src/core/core_csr.sv"
+`include "src/core/core_commit.sv"
 
 module core
 	import common::*;
@@ -77,7 +79,6 @@ module core
 
 	logic [63:0] csr_mstatus;
 	logic [63:0] csr_mtvec;
-	logic [63:0] csr_mip_raw;
 	logic [63:0] csr_mip;
 	logic [63:0] csr_mie;
 	logic [63:0] csr_mscratch;
@@ -88,7 +89,6 @@ module core
 	logic [63:0] csr_satp;
 	logic [63:0] csr_mstatus_diff;
 	logic [63:0] csr_mtvec_diff;
-	logic [63:0] csr_mip_raw_diff;
 	logic [63:0] csr_mip_diff;
 	logic [63:0] csr_mie_diff;
 	logic [63:0] csr_mscratch_diff;
@@ -129,8 +129,6 @@ module core
 	logic [7:0]  mem_store_strobe;
 	logic        mdu_out_valid;
 	logic [63:0] mdu_out_result;
-
-	integer i;
 
 	assign ex_is_mdu = is_mdu_cmd(ex_r.alu_cmd);
 
@@ -218,6 +216,45 @@ module core
 		.mdu_out_result(mdu_out_result)
 	);
 
+	core_commit u_commit(
+		.clk(clk),
+		.reset(reset),
+		.wb_r(wb_r),
+		.trint(trint),
+		.swint(swint),
+		.exint(exint),
+		.trap_commit(trap_commit),
+		.halted(halted),
+		.trap_valid_latched(trap_valid_latched),
+		.trap_code_latched(trap_code_latched),
+		.trap_pc_latched(trap_pc_latched),
+		.trap_cycle_latched(trap_cycle_latched),
+		.trap_instr_latched(trap_instr_latched),
+		.cycle_cnt(cycle_cnt),
+		.instr_cnt(instr_cnt),
+		.gpr(gpr),
+		.gpr_diff(gpr_diff),
+		.csr_mstatus(csr_mstatus),
+		.csr_mtvec(csr_mtvec),
+		.csr_mip(csr_mip),
+		.csr_mie(csr_mie),
+		.csr_mscratch(csr_mscratch),
+		.csr_mcause(csr_mcause),
+		.csr_mtval(csr_mtval),
+		.csr_mepc(csr_mepc),
+		.csr_mhartid(csr_mhartid),
+		.csr_satp(csr_satp),
+		.csr_mstatus_diff(csr_mstatus_diff),
+		.csr_mtvec_diff(csr_mtvec_diff),
+		.csr_mip_diff(csr_mip_diff),
+		.csr_mie_diff(csr_mie_diff),
+		.csr_mscratch_diff(csr_mscratch_diff),
+		.csr_mcause_diff(csr_mcause_diff),
+		.csr_mtval_diff(csr_mtval_diff),
+		.csr_mepc_diff(csr_mepc_diff),
+		.csr_satp_diff(csr_satp_diff)
+	);
+
 	assign raw_hazard_ex =
 		id_r.valid && ex_r.valid && ex_r.wen && (ex_r.rd != 0) && !ex_result_ready &&
 		((id_use_rs1 && (id_rs1 == ex_r.rd)) || (id_use_rs2 && (id_rs2 == ex_r.rd)));
@@ -246,16 +283,6 @@ module core
 	assign dreq.strobe = mem_r.mem_wstrb;
 	assign dreq.data   = mem_r.mem_wdata;
 
-	assign trap_commit = wb_r.valid && wb_r.trap;
-	assign csr_mip = (csr_mip_raw & ~64'h0000_0000_0000_0888) |
-	                 ({63'd0, exint} << 11) |
-	                 ({63'd0, trint} << 7) |
-	                 ({63'd0, swint} << 3);
-	assign csr_mip_diff = (csr_mip_raw_diff & ~64'h0000_0000_0000_0888) |
-	                      ({63'd0, exint} << 11) |
-	                      ({63'd0, trint} << 7) |
-	                      ({63'd0, swint} << 3);
-
 	always_ff @(posedge clk) begin
 		if (reset) begin
 			fetch_pc <= PCINIT;
@@ -270,62 +297,11 @@ module core
 			ex_r <= '0;
 			mem_r <= '0;
 			wb_r <= '0;
-			halted <= 1'b0;
-			trap_valid_latched <= 1'b0;
-			trap_code_latched <= 3'd0;
-			trap_pc_latched <= 64'd0;
-			trap_cycle_latched <= 64'd0;
-			trap_instr_latched <= 64'd0;
-			cycle_cnt <= 64'd0;
-			instr_cnt <= 64'd0;
-			csr_mstatus <= 64'd0;
-			csr_mtvec <= 64'd0;
-			csr_mip_raw <= 64'd0;
-			csr_mie <= 64'd0;
-			csr_mscratch <= 64'd0;
-			csr_mcause <= 64'd0;
-			csr_mtval <= 64'd0;
-			csr_mepc <= 64'd0;
-			csr_mhartid <= 64'd0;
-			csr_satp <= 64'd0;
-			for (i = 0; i < 32; i = i + 1) begin
-				gpr[i] <= 64'd0;
-			end
 		end else begin
-			cycle_cnt <= cycle_cnt + 64'd1;
-			if (wb_r.valid) instr_cnt <= instr_cnt + 64'd1;
-
-			if (wb_r.valid && wb_r.wen && (wb_r.rd != 0)) begin
-				gpr[wb_r.rd] <= wb_r.result;
-			end
-			gpr[0] <= 64'd0;
-
-			if (wb_r.valid && wb_r.csr_wen) begin
-				unique case (wb_r.csr_addr)
-					CSR_MSTATUS:  csr_mstatus <= wb_r.csr_wdata;
-					CSR_MTVEC:    csr_mtvec <= wb_r.csr_wdata;
-					CSR_MIP:      csr_mip_raw <= wb_r.csr_wdata;
-					CSR_MIE:      csr_mie <= wb_r.csr_wdata;
-					CSR_MSCRATCH: csr_mscratch <= wb_r.csr_wdata;
-					CSR_MCAUSE:   csr_mcause <= wb_r.csr_wdata;
-					CSR_MTVAL:    csr_mtval <= wb_r.csr_wdata;
-					CSR_MEPC:     csr_mepc <= wb_r.csr_wdata;
-					CSR_MCYCLE:   cycle_cnt <= wb_r.csr_wdata;
-					CSR_SATP:     csr_satp <= wb_r.csr_wdata;
-					default: begin end
-				endcase
-			end
-
 			if (trap_commit) begin
-				halted <= 1'b1;
 				fetch_pending <= 1'b0;
 				fetch_redirect_pending <= 1'b0;
 				fetch_buf_valid <= 1'b0;
-				trap_valid_latched <= 1'b1;
-				trap_code_latched <= gpr[10][2:0];
-				trap_pc_latched <= wb_r.pc;
-				trap_cycle_latched <= cycle_cnt;
-				trap_instr_latched <= instr_cnt + 64'd1;
 			end
 
 			if (!halted && !trap_commit) begin
@@ -466,41 +442,6 @@ module core
 				mem_r.valid <= 1'b0;
 				wb_r.valid  <= 1'b0;
 			end
-		end
-	end
-
-	always_comb begin
-		for (int j = 0; j < 32; j = j + 1) begin
-			gpr_diff[j] = gpr[j];
-		end
-		if (wb_r.valid && wb_r.wen && (wb_r.rd != 0)) begin
-			gpr_diff[wb_r.rd] = wb_r.result;
-		end
-		gpr_diff[0] = 64'd0;
-
-		csr_mstatus_diff = csr_mstatus;
-		csr_mtvec_diff = csr_mtvec;
-		csr_mip_raw_diff = csr_mip_raw;
-		csr_mie_diff = csr_mie;
-		csr_mscratch_diff = csr_mscratch;
-		csr_mcause_diff = csr_mcause;
-		csr_mtval_diff = csr_mtval;
-		csr_mepc_diff = csr_mepc;
-		csr_satp_diff = csr_satp;
-
-		if (wb_r.valid && wb_r.csr_wen) begin
-			unique case (wb_r.csr_addr)
-				CSR_MSTATUS:  csr_mstatus_diff = wb_r.csr_wdata;
-				CSR_MTVEC:    csr_mtvec_diff = wb_r.csr_wdata;
-				CSR_MIP:      csr_mip_raw_diff = wb_r.csr_wdata;
-				CSR_MIE:      csr_mie_diff = wb_r.csr_wdata;
-				CSR_MSCRATCH: csr_mscratch_diff = wb_r.csr_wdata;
-				CSR_MCAUSE:   csr_mcause_diff = wb_r.csr_wdata;
-				CSR_MTVAL:    csr_mtval_diff = wb_r.csr_wdata;
-				CSR_MEPC:     csr_mepc_diff = wb_r.csr_wdata;
-				CSR_SATP:     csr_satp_diff = wb_r.csr_wdata;
-				default: begin end
-			endcase
 		end
 	end
 
