@@ -152,6 +152,6 @@ set_property -dict {PACKAGE_PIN A18 IOSTANDARD LVCMOS33} [get_ports RsTx]
 set_property CONFIG_VOLTAGE 3.3 [current_design]
 set_property CFGBVS VCCO [current_design]
 
-
-set_false_path -from [get_clocks sys_clk_pin] -to [get_clocks -of_objects [get_pins soc_top_inst/clk_wiz_0/inst/mmcm_adv_inst/CLKOUT0]]
-set_false_path -from [get_clocks -of_objects [get_pins soc_top_inst/clk_wiz_0/inst/mmcm_adv_inst/CLKOUT0]] -to [get_clocks sys_clk_pin]
+# if using 25MHz, 50MHz or 100MHz, commenting out this code actually facilitates timing analysis
+#set_false_path -from [get_clocks sys_clk_pin] -to [get_clocks -of_objects [get_pins soc_top_inst/clk_wiz_0/inst/mmcm_adv_inst/CLKOUT0]]
+#set_false_path -from [get_clocks -of_objects [get_pins soc_top_inst/clk_wiz_0/inst/mmcm_adv_inst/CLKOUT0]] -to [get_clocks sys_clk_pin]

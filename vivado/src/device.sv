@@ -74,7 +74,7 @@ module device #(
 				rdata = cnter;
 			end
 			TX_READY: begin
-				rdata = '0;
+				rdata = {63'b0, tx_ready};
 			end
 			default: begin
 				
@@ -92,7 +92,7 @@ module device #(
 	assign last = ready;
 
 	/* UART */
-	parameter BIT_TMR_MAX = 'b10100010110000;
+	parameter BIT_TMR_MAX = 14'd868;
     parameter BIT_INDEX_MAX = 10;
 
 	logic finish;
@@ -149,7 +149,7 @@ module device #(
     always_ff @(posedge clk) begin
         unique case(txState)
             RDY: begin
-                if (send && putchar) txState <= LOAD_BIT;
+                if (send) txState <= LOAD_BIT;
             end
             LOAD_BIT: begin
                 txState <= SEND_BIT;
@@ -180,7 +180,8 @@ module device #(
     end
 
     always_ff @(posedge clk) begin
-        if (send) txData <= {1'b1, char_data, 1'b0};
+		// 只有在 UART 处于 RDY 状态时，才允许装载新字符
+        if (send && txState == RDY) txData <= {1'b1, char_data, 1'b0};
     end
 
     always_ff @(posedge clk) begin
