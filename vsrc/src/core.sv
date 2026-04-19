@@ -83,7 +83,7 @@ module core import common::*;(
 		.coreid             (0),
 		.priviledgeMode     (3),
 		.mstatus            (0),
-		.sstatus            (0 /* mstatus & 64'h800000030001e000 */),
+		.sstatus            (0 /* mstatus & SSTATUS_MASK */),
 		.mepc               (0),
 		.sepc               (0),
 		.mtval              (0),
