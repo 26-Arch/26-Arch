@@ -24,7 +24,7 @@ module DBusToCBus
     assign dcreq.strobe   =  dreq.strobe;
     assign dcreq.data     =  dreq.data;
     assign dcreq.len      =  MLEN1;
-	assign dcreq.burst = AXI_BURST_FIXED;
+	assign dcreq.burst = AXI_BURST_INCR;
 
     logic okay;
     assign okay = dcresp.ready && dcresp.last;
