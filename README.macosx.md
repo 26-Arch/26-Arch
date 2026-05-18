@@ -38,29 +38,17 @@ make --version
 
 本迁移已在 Homebrew Verilator `5.048` 和 Apple clang 环境下验证。
 
-## 3. 运行 lab1
+## 3. 运行 lab 测试
 
 在项目根目录运行：
 
 ```sh
-make test-lab1
+make test-lab5-nodiff
 ```
 
 首次运行会删除并重新生成 `build/`，然后调用 Verilator 编译仿真器。成功时，末尾会看到类似：
 
-```text
-The image is ./ready-to-run/lab1/lab1-test.bin
-Using simulated 256MB RAM
-No instruction commits for 5000 cycles of core 0. Please check the first instruction.
-```
-
-编译过程中可能出现一些 warning，例如：
-
-- `unknown warning option '-Wno-maybe-uninitialized'`
-- Verilator 生成代码里的 `unused variable 'vlSelfRef'`
-- `ld: warning: ignoring duplicate libraries`
-
-这些 warning 当前不影响 lab1 仿真。
+**当前只能在不使用 difftest 的情况下进行测试**
 
 ## 4. macOS 迁移处理过的问题
 
@@ -80,9 +68,7 @@ No instruction commits for 5000 cycles of core 0. Please check the first instruc
 
 4. NEMU 动态库
 
-   `ready-to-run/riscv64-nemu-interpreter-so` 是 Linux ELF shared object，macOS 不能通过 `dlopen` 加载它。现在 difftest 的 NEMU proxy 改为首次真实提交指令时再加载，避免空 CPU 的 lab1 timeout 测试被 Linux `.so` 提前卡住。
-
-   注意：当你实现 CPU 后，如果它开始提交指令，完整 difftest 仍然需要一个 macOS 可加载的原生引用模型动态库，或者在 Linux/容器/虚拟机环境中运行。
+   `ready-to-run/riscv64-nemu-interpreter-so` 是 Linux ELF shared object，macOS 不能通过 `dlopen` 加载它。
 
 5. 模板 CPU 的提交信号
 
@@ -94,12 +80,6 @@ No instruction commits for 5000 cycles of core 0. Please check the first instruc
 
 ```sh
 make clean
-```
-
-重新运行：
-
-```sh
-make test-lab1
 ```
 
 如果只想看最终关键信息，可以把日志保存下来：
