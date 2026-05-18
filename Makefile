@@ -32,34 +32,37 @@ emu:
 export NOOP_HOME=$(abspath .)
 export NEMU_HOME=$(abspath ./ready-to-run)
 
+REF_NEMU := riscv64-nemu-interpreter-so
+ifeq ($(shell uname -s),Darwin)
+REF_NEMU := riscv64-nemu-interpreter-so-apple
+endif
+REF_SO := $(NEMU_HOME)/$(REF_NEMU)
+
 sim:
 	rm -rf build
 	mkdir -p build
 	make EMU_TRACE=1 emu -j12 NOOP_HOME=$(NOOP_HOME) NEMU_HOME=$(NEMU_HOME)
 
 test-lab1: sim
-	TEST=$(TEST) ./build/emu --diff $(NEMU_HOME)/riscv64-nemu-interpreter-so -i ./ready-to-run/lab1/lab1-test.bin $(VOPT) || true
+	TEST=$(TEST) ./build/emu --diff $(REF_SO) -i ./ready-to-run/lab1/lab1-test.bin $(VOPT) || true
 
 test-lab1-extra: sim
-	TEST=$(TEST) ./build/emu --diff $(NEMU_HOME)/riscv64-nemu-interpreter-so -i ./ready-to-run/lab1/lab1-extra-test.bin $(VOPT) || true
+	TEST=$(TEST) ./build/emu --diff $(REF_SO) -i ./ready-to-run/lab1/lab1-extra-test.bin $(VOPT) || true
 
 test-lab2: sim
-	TEST=$(TEST) ./build/emu --diff $(NEMU_HOME)/riscv64-nemu-interpreter-so -i ./ready-to-run/lab2/lab2-test.bin $(VOPT) || true
+	TEST=$(TEST) ./build/emu --diff $(REF_SO) -i ./ready-to-run/lab2/lab2-test.bin $(VOPT) || true
 
 test-lab3: sim
-	TEST=$(TEST) ./build/emu --diff $(NEMU_HOME)/riscv64-nemu-interpreter-so -i ./ready-to-run/lab3/lab3-test.bin $(VOPT) || true
+	TEST=$(TEST) ./build/emu --diff $(REF_SO) -i ./ready-to-run/lab3/lab3-test.bin $(VOPT) || true
 
 test-lab3-extra: sim
-	TEST=$(TEST) ./build/emu --diff $(NEMU_HOME)/riscv64-nemu-interpreter-so -i ./ready-to-run/lab3/lab3-extra-test.bin $(VOPT) || true
+	TEST=$(TEST) ./build/emu --diff $(REF_SO) -i ./ready-to-run/lab3/lab3-extra-test.bin $(VOPT) || true
 
 test-lab4: sim
-	TEST=$(TEST) ./build/emu --diff $(NEMU_HOME)/riscv64-nemu-interpreter-so -i ./ready-to-run/lab4/lab4-test.bin $(VOPT) || true
+	TEST=$(TEST) ./build/emu --diff $(REF_SO) -i ./ready-to-run/lab4/lab4-test.bin $(VOPT) || true
 
 test-lab5: sim
-	TEST=$(TEST) ./build/emu --diff $(NEMU_HOME)/riscv64-nemu-interpreter-so -i ./ready-to-run/lab5/kernel.bin $(VOPT) || true
-
-test-lab5-nodiff: sim
-	TEST=$(TEST) ./build/emu --no-diff -i ./ready-to-run/lab5/kernel.bin $(VOPT) || true
+	TEST=$(TEST) ./build/emu --diff $(REF_SO) -i ./ready-to-run/lab5/kernel.bin $(VOPT) || true
 
 test-lab6: sim
 	TEST=sys ./build/emu --no-diff -i ./ready-to-run/lab6/lab6-test.bin $(VOPT) || true
