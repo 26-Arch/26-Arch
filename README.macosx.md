@@ -2,6 +2,8 @@
 
 假设你已经有 Homebrew。
 
+**目前支持 difftest nemu 到 lab 1～4，lab 5 的 mmu 待支持**
+
 ## 1. 安装依赖
 
 先安装 Xcode Command Line Tools：
@@ -43,7 +45,7 @@ make --version
 在项目根目录运行：
 
 ```sh
-make test-lab5-nodiff
+make test-lab1
 ```
 
 首次运行会删除并重新生成 `build/`，然后调用 Verilator 编译仿真器。成功时，末尾会看到类似：
@@ -69,10 +71,8 @@ make test-lab5-nodiff
 4. NEMU 动态库
 
    `ready-to-run/riscv64-nemu-interpreter-so` 是 Linux ELF shared object，macOS 不能通过 `dlopen` 加载它。
-
-5. 模板 CPU 的提交信号
-
-   `vsrc/src/core.sv` 中的占位 `DifftestInstrCommit.valid` 现在为 `1'b0`。未实现 CPU 不应伪造提交；之后实现真正 CPU 时，应把该信号接到实际提交事件。
+   
+   但你们的助教经过亿点点改造成功跑起来了，目前有 `ready-to-run/riscv64-nemu-interpreter-so-apple` 用于 apple silicon arm64。
 
 ## 5. 清理与重跑
 
@@ -80,11 +80,4 @@ make test-lab5-nodiff
 
 ```sh
 make clean
-```
-
-如果只想看最终关键信息，可以把日志保存下来：
-
-```sh
-make test-lab1 > /tmp/test-lab1.log 2>&1
-tail -80 /tmp/test-lab1.log
 ```
