@@ -2,8 +2,6 @@
 
 假设你已经有 Homebrew。
 
-**目前支持 difftest nemu 到 lab 1～4，lab 5 的 mmu 待支持**
-
 ## 1. 安装依赖
 
 先安装 Xcode Command Line Tools：
