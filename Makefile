@@ -14,12 +14,21 @@ handin:
 		echo "Please write your report in the 'docs' folder and convert it to 'report.pdf' first"; \
 		exit 1; \
 	fi; \
+	if [ ! -d vivado/test-cpu/project/project_3 ]; then \
+		echo "Missing vivado/test-cpu/project/project_3, cannot package project_3"; \
+		exit 1; \
+	fi; \
+	echo "Packing vivado/test-cpu/project/project_3 -> docs/project_3.zip"; \
+	rm -f docs/project_3.zip; \
+	zip -q -r docs/project_3.zip vivado/test-cpu/project/project_3; \
+	echo "docs/project_3.zip ready"; \
 	echo "Please enter your 'student id-name' (e.g., 12345678910-someone)"; \
 	read filename; \
 	echo "Please enter lab number (e.g., 1)"; \
 	read lab_n; \
 	zip -q -r "docs/$$filename-lab$$lab_n.zip" \
-	  include vsrc docs/report.pdf
+	  include vsrc docs/report.pdf docs/project_3.zip; \
+	echo "Done: docs/$$filename-lab$$lab_n.zip";
 
 sim-verilog:
 	@echo "I don't know why, just make difftest happy..."
